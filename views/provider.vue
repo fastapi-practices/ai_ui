@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { VbenFormProps } from '#/adapter/form';
 import type {
   OnActionClickParams,
   VxeTableGridOptions,
@@ -30,6 +31,7 @@ import {
 
 import {
   providerSchema,
+  queryProviderSchema,
   SYNCABLE_PROVIDER_TYPES,
   useProviderColumns,
 } from './data';
@@ -37,6 +39,15 @@ import {
 const providerModels = ref<AIProviderModelResult[]>([]);
 const providerModelsLoading = ref(false);
 const providerModelsTitle = ref('供应商模型');
+
+const formOptions: VbenFormProps = {
+  collapsed: true,
+  showCollapseButton: true,
+  submitButtonOptions: {
+    content: $t('common.form.query'),
+  },
+  schema: queryProviderSchema,
+};
 
 const gridOptions: VxeTableGridOptions<AIProviderResult> = {
   rowConfig: {
@@ -59,8 +70,9 @@ const gridOptions: VxeTableGridOptions<AIProviderResult> = {
   columns: useProviderColumns(onActionClick),
   proxyConfig: {
     ajax: {
-      query: async ({ page }) => {
+      query: async ({ page }, formValues) => {
         return await getAIProviderListApi({
+          ...formValues,
           page: page.currentPage,
           size: page.pageSize,
         });
@@ -70,6 +82,7 @@ const gridOptions: VxeTableGridOptions<AIProviderResult> = {
 };
 
 const [Grid, gridApi] = useVbenVxeGrid({
+  formOptions,
   gridOptions,
 });
 
@@ -91,12 +104,8 @@ async function openProviderModels(row: AIProviderResult) {
 }
 
 async function syncProviderModels(row: AIProviderResult) {
-  try {
-    await syncAIProviderModelsApi(row.id);
-    message.success($t('ui.actionMessage.operationSuccess'));
-  } finally {
-    onRefresh();
-  }
+  await syncAIProviderModelsApi(row.id);
+  message.success($t('ui.actionMessage.operationSuccess'));
 }
 
 function onActionClick({ code, row }: OnActionClickParams<AIProviderResult>) {

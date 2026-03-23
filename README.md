@@ -5,6 +5,8 @@
 ## 功能概览
 
 - AI Chat: 发起流式对话，支持 Markdown 内容渲染
+- Topic & History: 管理会话话题、聊天历史与消息上下文
+- Quick Phrase: 管理快捷短语并在对话时快速复用
 - Provider: 管理 AI 供应商配置
 - Model: 管理供应商下可用模型
 - MCP: 管理可接入的 MCP 服务

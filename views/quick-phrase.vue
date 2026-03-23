@@ -5,12 +5,11 @@ import type {
   VxeTableGridOptions,
 } from '#/adapter/vxe-table';
 import type {
-  AIModelParams,
-  AIModelResult,
-  AIProviderResult,
+  AIQuickPhraseParams,
+  AIQuickPhraseResult,
 } from '#/plugins/ai/api';
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, ref } from 'vue';
 
 import { Page, useVbenModal, VbenButton } from '@vben/common-ui';
 import { MaterialSymbolsAdd } from '@vben/icons';
@@ -21,25 +20,17 @@ import { message } from 'antdv-next';
 import { useVbenForm } from '#/adapter/form';
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import {
-  createAIModelApi,
-  deleteAIModelApi,
-  getAIModelListApi,
-  getAIProviderListApi,
-  updateAIModelApi,
+  createAIQuickPhraseApi,
+  deleteAIQuickPhraseApi,
+  getAIQuickPhraseListApi,
+  updateAIQuickPhraseApi,
 } from '#/plugins/ai/api';
 
-import { modelSchema, queryModelSchema, useModelColumns } from './data';
-
-const providers = ref<AIProviderResult[]>([]);
-const providerNameMap = ref(new Map<number, string>());
-
-async function fetchProviders() {
-  const data = await getAIProviderListApi();
-  providers.value = data.items;
-  providerNameMap.value = new Map(
-    data.items.map((item) => [item.id, item.name]),
-  );
-}
+import {
+  queryQuickPhraseSchema,
+  quickPhraseSchema,
+  useQuickPhraseColumns,
+} from './data';
 
 const formOptions: VbenFormProps = {
   collapsed: true,
@@ -47,10 +38,10 @@ const formOptions: VbenFormProps = {
   submitButtonOptions: {
     content: $t('common.form.query'),
   },
-  schema: queryModelSchema,
+  schema: queryQuickPhraseSchema,
 };
 
-const gridOptions: VxeTableGridOptions<AIModelResult> = {
+const gridOptions: VxeTableGridOptions<AIQuickPhraseResult> = {
   rowConfig: {
     keyField: 'id',
   },
@@ -68,14 +59,14 @@ const gridOptions: VxeTableGridOptions<AIModelResult> = {
     },
     zoom: true,
   },
-  columns: useModelColumns(providerNameMap, onActionClick),
+  columns: useQuickPhraseColumns(onActionClick),
   proxyConfig: {
     ajax: {
       query: async ({ page }, formValues) => {
-        return await getAIModelListApi({
-          ...formValues,
+        return await getAIQuickPhraseListApi({
           page: page.currentPage,
           size: page.pageSize,
+          ...formValues,
         });
       },
     },
@@ -91,12 +82,17 @@ function onRefresh() {
   gridApi.query();
 }
 
-function onActionClick({ code, row }: OnActionClickParams<AIModelResult>) {
+function onActionClick({
+  code,
+  row,
+}: OnActionClickParams<AIQuickPhraseResult>) {
   switch (code) {
     case 'delete': {
-      deleteAIModelApi([row.id]).then(() => {
+      deleteAIQuickPhraseApi(row.id).then(() => {
         message.success({
-          content: $t('ui.actionMessage.deleteSuccess', [row.model_id]),
+          content: $t('ui.actionMessage.deleteSuccess', [
+            row.content.slice(0, 12),
+          ]),
           key: 'action_process_msg',
         });
         onRefresh();
@@ -113,15 +109,15 @@ function onActionClick({ code, row }: OnActionClickParams<AIModelResult>) {
 const [Form, formApi] = useVbenForm({
   layout: 'vertical',
   showDefaultActions: false,
-  schema: modelSchema,
+  schema: quickPhraseSchema,
 });
 
-const formData = ref<AIModelResult>();
+const formData = ref<AIQuickPhraseResult>();
 
 const modalTitle = computed(() => {
   return formData.value?.id
-    ? $t('ui.actionTitle.edit', ['模型'])
-    : $t('ui.actionTitle.create', ['模型']);
+    ? $t('ui.actionTitle.edit', ['快捷短语'])
+    : $t('ui.actionTitle.create', ['快捷短语']);
 });
 
 const [Modal, modalApi] = useVbenModal({
@@ -133,15 +129,14 @@ const [Modal, modalApi] = useVbenModal({
     }
 
     modalApi.lock();
-    const data = await formApi.getValues<AIModelParams>();
+    const data = await formApi.getValues<AIQuickPhraseParams>();
 
     try {
       await (formData.value?.id
-        ? updateAIModelApi(formData.value.id, data)
-        : createAIModelApi(data));
+        ? updateAIQuickPhraseApi(formData.value.id, data)
+        : createAIQuickPhraseApi(data));
       message.success($t('ui.actionMessage.operationSuccess'));
       await modalApi.close();
-      await fetchProviders();
       onRefresh();
     } finally {
       modalApi.unlock();
@@ -149,7 +144,7 @@ const [Modal, modalApi] = useVbenModal({
   },
   onOpenChange(isOpen) {
     if (isOpen) {
-      const data = modalApi.getData<AIModelResult>();
+      const data = modalApi.getData<AIQuickPhraseResult>();
       formApi.resetForm();
       if (data) {
         formData.value = data;
@@ -160,10 +155,6 @@ const [Modal, modalApi] = useVbenModal({
     }
   },
 });
-
-onMounted(async () => {
-  await fetchProviders();
-});
 </script>
 
 <template>
@@ -172,7 +163,7 @@ onMounted(async () => {
       <template #toolbar-actions>
         <VbenButton @click="() => modalApi.setData(null).open()">
           <MaterialSymbolsAdd class="size-5" />
-          新增模型
+          新增短语
         </VbenButton>
       </template>
     </Grid>

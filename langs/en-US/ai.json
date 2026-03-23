@@ -3,5 +3,6 @@
   "chat": "AI Chat",
   "provider": "Provider",
   "model": "Model",
-  "mcp": "MCP"
+  "mcp": "MCP",
+  "quick_phrase": "Quick Phrase"
 }

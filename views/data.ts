@@ -2,7 +2,12 @@ import type { Ref } from 'vue';
 
 import type { VbenFormSchema } from '#/adapter/form';
 import type { OnActionClickFn, VxeGridProps } from '#/adapter/vxe-table';
-import type { AIMcpResult, AIModelResult, AIProviderResult } from '#/plugins/ai/api';
+import type {
+  AIMcpResult,
+  AIModelResult,
+  AIProviderResult,
+  AIQuickPhraseResult,
+} from '#/plugins/ai/api';
 import type { PaginationResult } from '#/types';
 
 import { h } from 'vue';
@@ -166,6 +171,32 @@ export const providerSchema: VbenFormSchema[] = [
   },
 ];
 
+export const queryProviderSchema: VbenFormSchema[] = [
+  {
+    component: 'Input',
+    fieldName: 'name',
+    label: '供应商名称',
+  },
+  {
+    component: 'Select',
+    componentProps: {
+      allowClear: true,
+      options: PROVIDER_TYPE_OPTIONS,
+    },
+    fieldName: 'type',
+    label: '供应商类型',
+  },
+  {
+    component: 'Select',
+    componentProps: {
+      allowClear: true,
+      options: getDictOptions(DictEnum.SYS_STATUS),
+    },
+    fieldName: 'status',
+    label: '状态',
+  },
+];
+
 export async function providerSelectApi() {
   return await getAIProviderListApi();
 }
@@ -271,6 +302,39 @@ export const modelSchema: VbenFormSchema[] = [
     component: 'Textarea',
     fieldName: 'remark',
     label: '备注',
+  },
+];
+
+export const queryModelSchema: VbenFormSchema[] = [
+  {
+    component: 'ApiSelect',
+    componentProps: {
+      allowClear: true,
+      api: providerSelectApi,
+      afterFetch: (data: PaginationResult<AIProviderResult>) => {
+        return data.items.map((item) => ({
+          label: item.name,
+          value: item.id,
+        }));
+      },
+      class: 'w-full',
+    },
+    fieldName: 'provider_id',
+    label: '供应商',
+  },
+  {
+    component: 'Input',
+    fieldName: 'model_id',
+    label: '模型 ID',
+  },
+  {
+    component: 'Select',
+    componentProps: {
+      allowClear: true,
+      options: getDictOptions(DictEnum.SYS_STATUS),
+    },
+    fieldName: 'status',
+    label: '状态',
   },
 ];
 
@@ -436,6 +500,77 @@ export const mcpSchema: VbenFormSchema[] = [
   },
 ];
 
+export const queryQuickPhraseSchema: VbenFormSchema[] = [
+  {
+    component: 'Input',
+    fieldName: 'content',
+    label: '短语内容',
+  },
+];
+
+export function useQuickPhraseColumns(
+  onActionClick?: OnActionClickFn<AIQuickPhraseResult>,
+): VxeGridProps['columns'] {
+  return [
+    {
+      field: 'seq',
+      title: $t('common.table.id'),
+      type: 'seq',
+      width: 50,
+    },
+    { field: 'content', title: '短语内容', align: 'left' },
+    { field: 'sort', title: '排序', width: 100 },
+    {
+      field: 'created_time',
+      title: $t('common.table.created_time'),
+      width: 168,
+    },
+    {
+      field: 'updated_time',
+      title: $t('common.table.updated_time'),
+      width: 168,
+    },
+    {
+      field: 'operation',
+      title: $t('common.table.operation'),
+      align: 'center',
+      fixed: 'right',
+      width: 140,
+      cellRender: {
+        attrs: {
+          onClick: onActionClick,
+        },
+        name: 'CellOperation',
+        options: ['edit', 'delete'],
+      },
+    },
+  ];
+}
+
+export const quickPhraseSchema: VbenFormSchema[] = [
+  {
+    component: 'Textarea',
+    componentProps: {
+      autoSize: { minRows: 4, maxRows: 8 },
+    },
+    fieldName: 'content',
+    label: '短语内容',
+    rules: 'required',
+  },
+  {
+    component: 'InputNumber',
+    componentProps: {
+      class: 'w-full',
+      min: 0,
+      precision: 0,
+      step: 1,
+    },
+    defaultValue: 0,
+    fieldName: 'sort',
+    label: '排序',
+  },
+];
+
 export function formatArgsInput(value?: null | string[]) {
   if (!value || value.length === 0) {
     return '';
@@ -444,9 +579,7 @@ export function formatArgsInput(value?: null | string[]) {
   return value.join('\n');
 }
 
-export function parseArgsInput(
-  value: null | string | undefined,
-) {
+export function parseArgsInput(value: null | string | undefined) {
   const text = value?.trim();
   if (!text) {
     return undefined;
@@ -468,10 +601,7 @@ export function formatEnvInput(value?: null | Record<string, any>) {
     .join('\n');
 }
 
-export function parseEnvInput(
-  value: null | string | undefined,
-  label: string,
-) {
+export function parseEnvInput(value: null | string | undefined, label: string) {
   const text = value?.trim();
   if (!text) {
     return undefined;

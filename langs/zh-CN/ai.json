@@ -3,5 +3,6 @@
   "chat": "AI Chat",
   "provider": "供应商管理",
   "model": "模型管理",
-  "mcp": "MCP 管理"
+  "mcp": "MCP 管理",
+  "quick_phrase": "快捷短语"
 }

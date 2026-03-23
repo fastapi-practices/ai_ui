@@ -9,6 +9,9 @@ import { useAccessStore } from '@vben/stores';
 import { requestClient } from '#/api/request';
 
 export interface AIProviderQueryParams {
+  name?: null | string;
+  status?: null | number;
+  type?: null | number;
   page?: number;
   size?: number;
 }
@@ -36,6 +39,9 @@ export interface AIProviderModelResult {
 }
 
 export interface AIModelQueryParams {
+  provider_id?: null | number;
+  model_id?: null | string;
+  status?: null | number;
   page?: number;
   size?: number;
 }
@@ -84,9 +90,12 @@ export interface AIMcpResult extends AIMcpParams {
 }
 
 export interface AIChatParams {
+  conversation_id?: null | string;
+  edit_message_index?: null | number;
+  regenerate_message_index?: null | number;
   provider_id: number;
   model_id: string;
-  user_prompt: string;
+  user_prompt?: null | string;
   max_tokens?: null | number;
   temperature?: null | number;
   top_p?: null | number;
@@ -98,13 +107,81 @@ export interface AIChatParams {
   logit_bias?: null | Recordable<number>;
   stop_sequences?: null | string[];
   extra_headers?: null | Recordable<string>;
-  extra_body?: null | Recordable<any>;
+  extra_body?: null | Recordable<any> | string;
 }
 
 export interface AIChatMessage {
+  conversation_id?: null | string;
+  message_index?: number;
   role: 'model' | 'user';
   timestamp: string;
   content: string;
+}
+
+export interface AIChatConversationQueryParams {
+  before?: null | string;
+  limit?: number;
+}
+
+export interface AIChatConversationItem {
+  id: number;
+  conversation_id: string;
+  title: string;
+  provider_id: number;
+  model_id: string;
+  user_id: number;
+  is_pinned: boolean;
+  pinned_time?: null | string;
+  last_message?: null | string;
+  message_count: number;
+  last_activity_time: string;
+  created_time: string;
+  updated_time?: null | string;
+}
+
+export interface AIChatConversationListResult {
+  items: AIChatConversationItem[];
+  has_more: boolean;
+  next_before?: null | string;
+}
+
+export interface AIChatMessageDetail extends AIChatMessage {
+  message_index: number;
+}
+
+export interface AIChatConversationDetail extends AIChatConversationItem {
+  messages: AIChatMessageDetail[];
+}
+
+export interface AIChatConversationUpdateParams {
+  title: string;
+}
+
+export interface AIChatConversationPinParams {
+  is_pinned: boolean;
+}
+
+export interface AIDeleteChatMessageResult {
+  deleted_conversation: boolean;
+  remaining_message_count: number;
+}
+
+export interface AIQuickPhraseQueryParams {
+  content?: null | string;
+  page?: number;
+  size?: number;
+}
+
+export interface AIQuickPhraseParams {
+  content: string;
+  sort?: number;
+}
+
+export interface AIQuickPhraseResult extends AIQuickPhraseParams {
+  id: number;
+  user_id: number;
+  created_time: string;
+  updated_time?: null | string;
 }
 
 export interface AIChatStreamOptions {
@@ -227,6 +304,98 @@ export async function updateAIMcpApi(pk: number, data: AIMcpParams) {
 
 export async function deleteAIMcpApi(pk: number) {
   return requestClient.delete(`/api/v1/mcps/${pk}`);
+}
+
+export async function getRecentAIChatConversationsApi(
+  params?: AIChatConversationQueryParams,
+) {
+  return requestClient.get<AIChatConversationListResult>(
+    '/api/v1/chat/conversations',
+    {
+      params,
+    },
+  );
+}
+
+export async function getAIChatConversationDetailApi(conversationId: string) {
+  return requestClient.get<AIChatConversationDetail>(
+    `/api/v1/chat/conversations/${conversationId}`,
+  );
+}
+
+export async function updateAIChatConversationApi(
+  conversationId: string,
+  data: AIChatConversationUpdateParams,
+) {
+  return requestClient.put(
+    `/api/v1/chat/conversations/${conversationId}`,
+    data,
+  );
+}
+
+export async function deleteAIChatConversationApi(conversationId: string) {
+  return requestClient.delete(`/api/v1/chat/conversations/${conversationId}`);
+}
+
+export async function pinAIChatConversationApi(
+  conversationId: string,
+  data: AIChatConversationPinParams,
+) {
+  return requestClient.put(
+    `/api/v1/chat/conversations/${conversationId}/pin`,
+    data,
+  );
+}
+
+export async function clearAIChatConversationMessagesApi(
+  conversationId: string,
+) {
+  return requestClient.delete(
+    `/api/v1/chat/conversations/${conversationId}/messages`,
+  );
+}
+
+export async function deleteAIChatMessageApi(
+  conversationId: string,
+  messageIndex: number,
+) {
+  return requestClient.delete<AIDeleteChatMessageResult>(
+    `/api/v1/chat/conversations/${conversationId}/messages/${messageIndex}`,
+  );
+}
+
+export async function getAllAIQuickPhraseApi() {
+  return requestClient.get<AIQuickPhraseResult[]>('/api/v1/quick-phrases/all');
+}
+
+export async function getAIQuickPhraseDetailApi(pk: number) {
+  return requestClient.get<AIQuickPhraseResult>(`/api/v1/quick-phrases/${pk}`);
+}
+
+export async function getAIQuickPhraseListApi(
+  params?: AIQuickPhraseQueryParams,
+) {
+  return requestClient.get<PaginationResult<AIQuickPhraseResult>>(
+    '/api/v1/quick-phrases',
+    {
+      params,
+    },
+  );
+}
+
+export async function createAIQuickPhraseApi(data: AIQuickPhraseParams) {
+  return requestClient.post('/api/v1/quick-phrases', data);
+}
+
+export async function updateAIQuickPhraseApi(
+  pk: number,
+  data: AIQuickPhraseParams,
+) {
+  return requestClient.put(`/api/v1/quick-phrases/${pk}`, data);
+}
+
+export async function deleteAIQuickPhraseApi(pk: number) {
+  return requestClient.delete(`/api/v1/quick-phrases/${pk}`);
 }
 
 export async function streamAIChatApi(

@@ -48,6 +48,15 @@ const routes: RouteRecordRaw[] = [
       icon: 'simple-icons:modelcontextprotocol',
     },
   },
+  {
+    name: 'PluginAIQuickPhrase',
+    path: '/plugins/ai/quick-phrase',
+    component: () => import('#/plugins/ai/views/quick-phrase.vue'),
+    meta: {
+      title: $t('ai.quick_phrase'),
+      icon: 'mdi:lightning-bolt-outline',
+    },
+  },
 ];
 
 export default routes;
