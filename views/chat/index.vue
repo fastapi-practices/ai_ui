@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { MenuItemType } from 'antdv-next';
+
 import type { ChatMessageItem } from './data';
 
 import type {
@@ -13,6 +15,7 @@ import type {
 
 import {
   computed,
+  h,
   nextTick,
   onBeforeUnmount,
   onMounted,
@@ -21,10 +24,21 @@ import {
 } from 'vue';
 import { RouterLink } from 'vue-router';
 
-import { Page, useVbenModal, VbenButton } from '@vben/common-ui';
-import { IconifyIcon } from '@vben/icons';
-import { useClipboard } from '@vueuse/core';
+import {
+  confirm,
+  Page,
+  useVbenModal,
+  VbenButton,
+} from '@vben/common-ui';
+import {
+  IconifyIcon,
+  MaterialSymbolsDelete,
+  MaterialSymbolsEdit,
+  Pin,
+  PinOff,
+} from '@vben/icons';
 
+import { useClipboard } from '@vueuse/core';
 import { message } from 'antdv-next';
 import MarkdownRender from 'markstream-vue';
 
@@ -581,11 +595,17 @@ async function copyMessageContent(item: ChatMessageItem) {
   message.success('消息内容已复制');
 }
 
-function startRenameConversation() {
-  if (!activeConversation.value) {
+async function startRenameConversation(conversation?: AIChatConversationItem) {
+  const targetConversation = conversation || activeConversation.value;
+  if (!targetConversation) {
     return;
   }
-  renameTitle.value = activeConversation.value.title;
+
+  if (targetConversation.conversation_id !== activeConversationId.value) {
+    await selectConversation(targetConversation.conversation_id);
+  }
+
+  renameTitle.value = targetConversation.title;
   isRenamingConversation.value = true;
 }
 
@@ -615,17 +635,17 @@ async function submitRenameConversation() {
   message.success('话题标题已更新');
 }
 
-async function togglePinConversation() {
-  const conversation = activeConversation.value;
-  if (!conversation) {
+async function togglePinConversation(conversation?: AIChatConversationItem) {
+  const targetConversation = conversation || activeConversation.value;
+  if (!targetConversation) {
     return;
   }
 
-  await pinAIChatConversationApi(conversation.conversation_id, {
-    is_pinned: !conversation.is_pinned,
+  await pinAIChatConversationApi(targetConversation.conversation_id, {
+    is_pinned: !targetConversation.is_pinned,
   });
   await fetchConversations(false);
-  message.success(conversation.is_pinned ? '已取消置顶' : '已置顶话题');
+  message.success(targetConversation.is_pinned ? '已取消置顶' : '已置顶话题');
 }
 
 async function removeConversation(conversationId: string) {
@@ -647,6 +667,61 @@ async function removeConversation(conversationId: string) {
   }
 
   message.success('聊天历史已删除');
+}
+
+function confirmRemoveConversation(conversation: AIChatConversationItem) {
+  confirm({
+    content: `确认删除“${conversation.title}”吗？`,
+    icon: 'warning',
+  }).then(async () => {
+    await removeConversation(conversation.conversation_id);
+  });
+}
+
+function getConversationMenuItems(
+  conversation: AIChatConversationItem,
+): MenuItemType[] {
+  return [
+    {
+      icon: h(MaterialSymbolsEdit, { class: 'size-4' }),
+      key: 'rename',
+      label: '重命名',
+    },
+    {
+      icon: h(conversation.is_pinned ? PinOff : Pin, { class: 'size-4' }),
+      key: 'pin',
+      label: conversation.is_pinned ? '取消置顶' : '置顶',
+    },
+    {
+      type: 'divider',
+    },
+    {
+      danger: true,
+      icon: h(MaterialSymbolsDelete, { class: 'size-4' }),
+      key: 'delete',
+      label: '删除',
+    },
+  ] satisfies MenuItemType[];
+}
+
+function handleConversationMenuClick(
+  key: string,
+  conversation: AIChatConversationItem,
+) {
+  switch (key) {
+    case 'delete': {
+      confirmRemoveConversation(conversation);
+      break;
+    }
+    case 'pin': {
+      void togglePinConversation(conversation);
+      break;
+    }
+    case 'rename': {
+      void startRenameConversation(conversation);
+      break;
+    }
+  }
 }
 
 async function clearMessages() {
@@ -779,9 +854,7 @@ async function submitChat(
       stop_sequences: parseJsonField<string[]>(
         stopSequences.value,
         '停止序列',
-        (value) =>
-          Array.isArray(value) &&
-          value.every((entry) => typeof entry === 'string'),
+        Array.isArray,
       ),
       temperature: temperature.value,
       timeout: timeout.value,
@@ -1128,9 +1201,6 @@ const composerHint = computed(() => {
   if (regeneratingMessageIndex.value !== undefined) {
     return `正在重新生成第 ${regeneratingMessageIndex.value + 1} 条 AI 回复`;
   }
-  if (activeConversationId.value) {
-    return '继续当前话题';
-  }
   return '';
 });
 
@@ -1150,9 +1220,8 @@ const [SettingsModal, settingsModalApi] = useVbenModal({
 
 onMounted(async () => {
   composerHeight.value = COMPOSER_DEFAULT_HEIGHT;
-  nextTick(() => {
-    setupComposerLayoutObserver();
-  });
+  await nextTick();
+  setupComposerLayoutObserver();
 
   await fetchConversations(false);
 
@@ -1204,63 +1273,64 @@ onBeforeUnmount(() => {
             :image="null"
           />
           <template v-else>
-            <div
+            <a-dropdown
               v-for="conversation in sortedConversations"
               :key="conversation.conversation_id"
-              class="rounded-xl border transition-colors"
-              :class="
-                conversation.conversation_id === activeConversationId
-                  ? 'border-primary/30 bg-primary/8'
-                  : 'border-transparent bg-background hover:border-border'
-              "
+              :menu="{
+                items: getConversationMenuItems(conversation),
+                onClick: ({ key }) =>
+                  handleConversationMenuClick(String(key), conversation),
+              }"
+              :trigger="['contextmenu']"
             >
-              <div class="p-3">
-                <div class="flex items-start gap-2">
-                  <button
-                    class="min-w-0 flex-1 text-left"
-                    type="button"
-                    @click="selectConversation(conversation.conversation_id)"
+              <div
+                class="group relative rounded-xl border transition-all duration-200"
+                :class="
+                  conversation.conversation_id === activeConversationId
+                    ? 'border-primary/45 bg-primary/10 shadow-[0_10px_30px_-18px_hsl(var(--primary)/0.55)] ring-1 ring-primary/15'
+                    : 'border-transparent bg-background hover:border-border hover:bg-accent/35'
+                "
+              >
+                <button
+                  class="absolute top-2.5 right-2.5 z-10 inline-flex size-7 items-center justify-center text-muted-foreground opacity-0 transition-colors hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100"
+                  :title="`删除 ${conversation.title}`"
+                  type="button"
+                  @click.stop="confirmRemoveConversation(conversation)"
+                >
+                  <IconifyIcon class="size-3.5" icon="mdi:close" />
+                </button>
+                <button
+                  class="min-w-0 w-full p-3 pr-11 text-left"
+                  type="button"
+                  @click="selectConversation(conversation.conversation_id)"
+                >
+                  <span class="flex items-center gap-2">
+                    <span class="truncate text-sm font-medium text-foreground">
+                      {{ conversation.title }}
+                    </span>
+                    <span
+                      v-if="conversation.is_pinned"
+                      class="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
+                    >
+                      置顶
+                    </span>
+                  </span>
+                  <span
+                    class="mt-2 block truncate text-xs text-muted-foreground"
                   >
-                    <div class="flex items-center gap-2">
-                      <div class="truncate text-sm font-medium text-foreground">
-                        {{ conversation.title }}
-                      </div>
-                      <span
-                        v-if="conversation.is_pinned"
-                        class="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
-                      >
-                        置顶
-                      </span>
-                    </div>
-                    <div
-                      class="mt-2 line-clamp-2 text-xs text-muted-foreground"
-                    >
-                      {{ conversation.last_message || '暂无消息内容' }}
-                    </div>
-                    <div
-                      class="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground"
-                    >
-                      <span>{{ conversation.message_count }} 条消息</span>
-                      <span>{{
-                        parseDateLabel(conversation.last_activity_time)
-                      }}</span>
-                    </div>
-                  </button>
-                  <a-popconfirm
-                    title="删除该聊天历史？"
-                    :description="conversation.title"
-                    @confirm="removeConversation(conversation.conversation_id)"
+                    {{ conversation.last_message || '暂无消息内容' }}
+                  </span>
+                  <span
+                    class="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground"
                   >
-                    <button
-                      class="mt-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-                      type="button"
-                    >
-                      删除
-                    </button>
-                  </a-popconfirm>
-                </div>
+                    <span>{{ conversation.message_count }} 条消息</span>
+                    <span>{{
+                      parseDateLabel(conversation.last_activity_time)
+                    }}</span>
+                  </span>
+                </button>
               </div>
-            </div>
+            </a-dropdown>
             <VbenButton
               v-if="hasMoreConversations"
               block
@@ -1319,41 +1389,15 @@ onBeforeUnmount(() => {
               </template>
             </div>
 
-            <div class="ml-auto flex items-center gap-2">
-              <VbenButton
-                v-if="activeConversationId && !isRenamingConversation"
-                size="sm"
-                variant="outline"
-                @click="startRenameConversation"
-              >
-                重命名
-              </VbenButton>
-              <VbenButton
-                v-if="activeConversationId && !isRenamingConversation"
-                size="sm"
-                variant="outline"
-                @click="togglePinConversation"
-              >
-                {{ activeConversation?.is_pinned ? '取消置顶' : '置顶' }}
-              </VbenButton>
-              <a-popconfirm
-                v-if="activeConversationId"
-                title="删除当前聊天历史？"
-                :description="activeConversationTitle"
-                @confirm="removeConversation(activeConversationId)"
-              >
-                <VbenButton danger size="sm" variant="outline">删除</VbenButton>
-              </a-popconfirm>
-              <VbenButton
-                v-if="sending"
-                danger
-                size="sm"
-                variant="outline"
-                @click="stopStreaming"
-              >
-                停止
-              </VbenButton>
-            </div>
+            <VbenButton
+              v-if="sending"
+              danger
+              size="sm"
+              variant="outline"
+              @click="stopStreaming"
+            >
+              停止
+            </VbenButton>
           </div>
         </div>
 
@@ -1436,13 +1480,26 @@ onBeforeUnmount(() => {
                       :max-live-nodes="0"
                     />
                   </div>
-                </div>
-
-                <div
-                  v-if="item.is_error && item.error_message"
-                  class="mt-1 px-1 text-xs text-destructive/85"
-                >
-                  {{ item.error_message }}
+                  <div
+                    v-if="
+                      item.is_error &&
+                      (
+                        (item.error_message &&
+                          item.error_message !== item.content) ||
+                        item.conversation_id
+                      )
+                    "
+                    class="mt-3 text-xs leading-6 whitespace-pre-wrap text-destructive/90"
+                  >
+                    <template
+                      v-if="item.error_message && item.error_message !== item.content"
+                    >
+                      {{ item.error_message }}
+                    </template>
+                    <div v-if="item.conversation_id" class="mt-1">
+                      对话 ID: {{ item.conversation_id }}
+                    </div>
+                  </div>
                 </div>
 
                 <div
@@ -1817,7 +1874,9 @@ onBeforeUnmount(() => {
                 </div>
 
                 <div class="ai-composer__meta">
-                  <span class="ai-composer__hint">{{ composerHint }}</span>
+                  <span v-if="composerHint" class="ai-composer__hint">{{
+                    composerHint
+                  }}</span>
                   <span class="ai-composer__shortcut">Enter 发送</span>
                   <span class="ai-composer__shortcut">Shift + Enter 换行</span>
                 </div>
