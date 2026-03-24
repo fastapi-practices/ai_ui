@@ -15,7 +15,7 @@ const routes: RouteRecordRaw[] = [
   {
     name: 'PluginAIChat',
     path: '/plugins/ai/chat',
-    component: () => import('#/plugins/ai/views/chat.vue'),
+    component: () => import('#/plugins/ai/views/chat/index.vue'),
     meta: {
       title: $t('ai.chat'),
       icon: 'ri:chat-ai-line',
@@ -24,7 +24,7 @@ const routes: RouteRecordRaw[] = [
   {
     name: 'PluginAIProvider',
     path: '/plugins/ai/provider',
-    component: () => import('#/plugins/ai/views/provider.vue'),
+    component: () => import('#/plugins/ai/views/provider/index.vue'),
     meta: {
       title: $t('ai.provider'),
       icon: 'mdi:hub-outline',
@@ -33,7 +33,7 @@ const routes: RouteRecordRaw[] = [
   {
     name: 'PluginAIModel',
     path: '/plugins/ai/model',
-    component: () => import('#/plugins/ai/views/model.vue'),
+    component: () => import('#/plugins/ai/views/model/index.vue'),
     meta: {
       title: $t('ai.model'),
       icon: 'carbon:model-alt',
@@ -42,7 +42,7 @@ const routes: RouteRecordRaw[] = [
   {
     name: 'PluginAIMcp',
     path: '/plugins/ai/mcp',
-    component: () => import('#/plugins/ai/views/mcp.vue'),
+    component: () => import('#/plugins/ai/views/mcp/index.vue'),
     meta: {
       title: $t('ai.mcp'),
       icon: 'simple-icons:modelcontextprotocol',
@@ -51,7 +51,7 @@ const routes: RouteRecordRaw[] = [
   {
     name: 'PluginAIQuickPhrase',
     path: '/plugins/ai/quick-phrase',
-    component: () => import('#/plugins/ai/views/quick-phrase.vue'),
+    component: () => import('#/plugins/ai/views/quick-phrase/index.vue'),
     meta: {
       title: $t('ai.quick_phrase'),
       icon: 'mdi:lightning-bolt-outline',

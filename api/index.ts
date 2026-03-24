@@ -35,7 +35,6 @@ export interface AIProviderModelResult {
   id: string;
   object: string;
   created: number;
-  owned_by: string;
 }
 
 export interface AIModelQueryParams {
@@ -107,7 +106,7 @@ export interface AIChatParams {
   logit_bias?: null | Recordable<number>;
   stop_sequences?: null | string[];
   extra_headers?: null | Recordable<string>;
-  extra_body?: null | Recordable<any> | string;
+  extra_body?: null | string;
 }
 
 export interface AIChatMessage {
@@ -116,6 +115,8 @@ export interface AIChatMessage {
   role: 'model' | 'user';
   timestamp: string;
   content: string;
+  is_error?: boolean;
+  error_message?: null | string;
 }
 
 export interface AIChatConversationQueryParams {
@@ -173,6 +174,7 @@ export interface AIQuickPhraseQueryParams {
 }
 
 export interface AIQuickPhraseParams {
+  title: string;
   content: string;
   sort?: number;
 }
@@ -203,7 +205,13 @@ async function readErrorMessage(response: Response) {
 
   try {
     const payload = JSON.parse(text);
-    return payload?.error ?? payload?.msg ?? payload?.message ?? text;
+    return (
+      payload?.error_message ??
+      payload?.error ??
+      payload?.msg ??
+      payload?.message ??
+      text
+    );
   } catch {
     return text || `HTTP ${response.status}`;
   }
