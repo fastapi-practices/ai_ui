@@ -3,17 +3,16 @@ import type { Ref } from 'vue';
 import type { VbenFormSchema } from '#/adapter/form';
 import type { OnActionClickFn, VxeGridProps } from '#/adapter/vxe-table';
 import type { AIModelResult, AIProviderResult } from '#/plugins/ai/api';
-import type { PaginationResult } from '#/types';
 
 import { h } from 'vue';
 
 import { $t } from '@vben/locales';
 
-import { getAIProviderListApi } from '#/plugins/ai/api';
+import { getAllAIProviderApi } from '#/plugins/ai/api';
 import { DictEnum, getDictOptions } from '#/utils/dict';
 
 async function providerSelectApi() {
-  return await getAIProviderListApi();
+  return await getAllAIProviderApi();
 }
 
 export function useModelColumns(
@@ -83,8 +82,8 @@ export const modelSchema: VbenFormSchema[] = [
     componentProps: {
       allowClear: true,
       api: providerSelectApi,
-      afterFetch: (data: PaginationResult<AIProviderResult>) => {
-        return data.items.map((item) => ({
+      afterFetch: (data: AIProviderResult[]) => {
+        return data.map((item) => ({
           label: item.name,
           value: item.id,
         }));
@@ -126,8 +125,8 @@ export const queryModelSchema: VbenFormSchema[] = [
     componentProps: {
       allowClear: true,
       api: providerSelectApi,
-      afterFetch: (data: PaginationResult<AIProviderResult>) => {
-        return data.items.map((item) => ({
+      afterFetch: (data: AIProviderResult[]) => {
+        return data.map((item) => ({
           label: item.name,
           value: item.id,
         }));

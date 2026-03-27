@@ -1,13 +1,95 @@
-import type {
-  AIChatConversationItem,
-  AIChatMessage,
-  AIChatMessageDetail,
-} from '#/plugins/ai/api';
+import type { AIChatMessage, AIChatMessageDetail } from '#/plugins/ai/api';
 
 export type ChatMessageItem = AIChatMessageDetail & {
   id: string;
   streaming?: boolean;
 };
+
+type AIChatCompletionsSSE =
+  | {
+      event: 'response.completed' | 'response.final_result';
+      data: {
+        conversation_id: string;
+      };
+    }
+  | {
+      event: 'response.error';
+      data: {
+        conversation_id: string;
+        detail: string;
+        message: string;
+        message_index: number;
+      };
+    }
+  | {
+      event: 'response.output_text.created';
+      data: {
+        conversation_id: string;
+        message_index: number;
+        role: 'model';
+        timestamp: string;
+      };
+    }
+  | {
+      event: 'response.output_text.delta';
+      data: {
+        conversation_id: string;
+        delta: string;
+        message_index: number;
+      };
+    }
+  | {
+      event: 'response.output_text.done';
+      data: {
+        content: string;
+        conversation_id: string;
+        message_index: number;
+      };
+    }
+  | {
+      event: 'response.reasoning.created';
+      data: {
+        conversation_id: string;
+        message_index: number;
+        role: 'thinking';
+        timestamp: string;
+      };
+    }
+  | {
+      event: 'response.reasoning.delta';
+      data: {
+        conversation_id: string;
+        delta: string;
+        message_index: number;
+      };
+    }
+  | {
+      event: 'response.reasoning.done';
+      data: {
+        content: string;
+        conversation_id: string;
+        message_index: number;
+      };
+    }
+  | {
+      event: 'response.structured.done';
+      data: {
+        content: string;
+        conversation_id: string;
+        message_index: number;
+        structured_data: unknown;
+      };
+    }
+  | {
+      event: 'response.user';
+      data: {
+        content: string;
+        conversation_id: string;
+        message_index: number;
+        role: 'user';
+        timestamp: string;
+      };
+    };
 
 export const COMPOSER_MIN_HEIGHT = 56;
 export const COMPOSER_DEFAULT_HEIGHT = 56;
@@ -20,23 +102,6 @@ export const LOGIT_BIAS_PLACEHOLDER = '{"198":-100}';
 
 export function buildMessageId(seedValue?: null | number | string) {
   return `${seedValue ?? Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-export function compareConversations(
-  a: AIChatConversationItem,
-  b: AIChatConversationItem,
-) {
-  if (a.is_pinned !== b.is_pinned) {
-    return Number(b.is_pinned) - Number(a.is_pinned);
-  }
-
-  const aTime = a.is_pinned
-    ? a.pinned_time || a.last_activity_time
-    : a.last_activity_time;
-  const bTime = b.is_pinned
-    ? b.pinned_time || b.last_activity_time
-    : b.last_activity_time;
-  return new Date(bTime).getTime() - new Date(aTime).getTime();
 }
 
 export function makeConversationTitle(text: string) {
@@ -96,9 +161,17 @@ export function mergeModelContent(previous: string, incoming: string) {
 }
 
 export function resolveChatMessageContent(
-  item: Pick<AIChatMessage, 'content' | 'error_message'>,
+  item: Pick<AIChatMessage, 'content' | 'error_message' | 'structured_data'>,
 ) {
-  return item.content || item.error_message || '';
+  if (item.content) {
+    return item.content;
+  }
+
+  if (item.structured_data) {
+    return item.structured_data;
+  }
+
+  return item.error_message || '';
 }
 
 export function normalizeMessage(
@@ -110,29 +183,155 @@ export function normalizeMessage(
     content: resolveChatMessageContent(item),
     conversation_id: item.conversation_id ?? activeConversationId ?? null,
     error_message: item.error_message ?? null,
-    id: buildMessageId(item.message_index ?? `${item.role}-${fallbackIndex}`),
+    id: buildMessageId(
+      item.message_id ?? item.message_index ?? `${item.role}-${fallbackIndex}`,
+    ),
     is_error: item.is_error ?? false,
+    message_id: item.message_id ?? null,
     message_index: item.message_index ?? fallbackIndex,
     role: item.role,
+    structured_data: item.structured_data ?? null,
     streaming: false,
     timestamp: item.timestamp,
   };
 }
 
-export function consumeBufferedLines(
-  buffer: string,
-  onLine: (data: AIChatMessage) => void,
-) {
-  const lines = buffer.split('\n');
-  const rest = lines.pop() || '';
+export function toAIChatMessage(
+  payload: AIChatCompletionsSSE,
+): AIChatMessage | null {
+  switch (payload.event) {
+    case 'response.user': {
+      return payload.data;
+    }
+    case 'response.reasoning.created': {
+      return {
+        content: '',
+        conversation_id: payload.data.conversation_id,
+        message_index: payload.data.message_index,
+        role: 'thinking',
+        timestamp: payload.data.timestamp,
+      };
+    }
+    case 'response.reasoning.delta': {
+      return {
+        content: payload.data.delta,
+        conversation_id: payload.data.conversation_id,
+        message_index: payload.data.message_index,
+        role: 'thinking',
+        timestamp: new Date().toISOString(),
+      };
+    }
+    case 'response.reasoning.done': {
+      return {
+        content: payload.data.content,
+        conversation_id: payload.data.conversation_id,
+        message_index: payload.data.message_index,
+        role: 'thinking',
+        timestamp: new Date().toISOString(),
+      };
+    }
+    case 'response.output_text.created': {
+      return {
+        content: '',
+        conversation_id: payload.data.conversation_id,
+        message_index: payload.data.message_index,
+        role: 'model',
+        timestamp: payload.data.timestamp,
+      };
+    }
+    case 'response.output_text.delta': {
+      return {
+        content: payload.data.delta,
+        conversation_id: payload.data.conversation_id,
+        message_index: payload.data.message_index,
+        role: 'model',
+        timestamp: new Date().toISOString(),
+      };
+    }
+    case 'response.output_text.done': {
+      return {
+        content: payload.data.content,
+        conversation_id: payload.data.conversation_id,
+        message_index: payload.data.message_index,
+        role: 'model',
+        timestamp: new Date().toISOString(),
+      };
+    }
+    case 'response.structured.done': {
+      return {
+        content: payload.data.content,
+        conversation_id: payload.data.conversation_id,
+        message_index: payload.data.message_index,
+        role: 'model',
+        structured_data: JSON.stringify(payload.data.structured_data, null, 2),
+        timestamp: new Date().toISOString(),
+      };
+    }
+    case 'response.error': {
+      return {
+        content: payload.data.message,
+        conversation_id: payload.data.conversation_id,
+        error_message: payload.data.detail || payload.data.message,
+        is_error: true,
+        message_index: payload.data.message_index,
+        role: 'model',
+        timestamp: new Date().toISOString(),
+      };
+    }
+    default: {
+      return null;
+    }
+  }
+}
 
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) {
+export function consumeBufferedSSEMessages(
+  buffer: string,
+  onMessage: (data: AIChatMessage) => void,
+) {
+  const segments = buffer.split(/\r?\n\r?\n/u);
+  const rest = segments.pop() || '';
+
+  for (const segment of segments) {
+    const lines = segment
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (lines.length === 0) {
       continue;
     }
 
-    onLine(JSON.parse(line) as AIChatMessage);
+    let eventName = '';
+    const dataLines: string[] = [];
+
+    for (const line of lines) {
+      if (line.startsWith(':')) {
+        continue;
+      }
+
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim();
+        continue;
+      }
+
+      if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).trim());
+      }
+    }
+
+    if (!eventName || dataLines.length === 0) {
+      continue;
+    }
+
+    const payload = {
+      data: JSON.parse(dataLines.join('\n')),
+      event: eventName,
+    } as AIChatCompletionsSSE;
+
+    const message = toAIChatMessage(payload);
+    if (message) {
+      onMessage(message);
+    }
   }
 
   return rest;

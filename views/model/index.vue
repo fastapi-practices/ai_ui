@@ -24,7 +24,7 @@ import {
   createAIModelApi,
   deleteAIModelApi,
   getAIModelListApi,
-  getAIProviderListApi,
+  getAllAIProviderApi,
   updateAIModelApi,
 } from '#/plugins/ai/api';
 
@@ -34,10 +34,10 @@ const providers = ref<AIProviderResult[]>([]);
 const providerNameMap = ref(new Map<number, string>());
 
 async function fetchProviders() {
-  const data = await getAIProviderListApi();
-  providers.value = data.items;
+  const data = await getAllAIProviderApi();
+  providers.value = data;
   providerNameMap.value = new Map(
-    data.items.map((item) => [item.id, item.name]),
+    data.map((item) => [item.id, item.name]),
   );
 }
 

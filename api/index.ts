@@ -89,9 +89,10 @@ export interface AIMcpResult extends AIMcpParams {
 }
 
 export interface AIChatParams {
+  mode: 'create' | 'edit' | 'regenerate';
   conversation_id?: null | string;
-  edit_message_index?: null | number;
-  regenerate_message_index?: null | number;
+  edit_message_id?: null | number;
+  regenerate_message_id?: null | number;
   provider_id: number;
   model_id: string;
   user_prompt?: null | string;
@@ -107,35 +108,39 @@ export interface AIChatParams {
   stop_sequences?: null | string[];
   extra_headers?: null | Recordable<string>;
   extra_body?: null | string;
+  include_thinking?: boolean;
+  reasoning_effort?: null | string;
+  enable_builtin_tools?: boolean;
+  mcp_ids?: null | number[];
+  output_mode?: 'native' | 'prompted' | 'text' | 'tool';
+  output_schema?: null | Recordable<any>;
+  output_schema_name?: null | string;
+  output_schema_description?: null | string;
+  web_search?: 'builtin' | 'duckduckgo' | 'tavily';
 }
 
 export interface AIChatMessage {
+  message_id?: null | number;
   conversation_id?: null | string;
   message_index?: number;
-  role: 'model' | 'user';
+  role: 'model' | 'thinking' | 'user';
   timestamp: string;
   content: string;
   is_error?: boolean;
   error_message?: null | string;
+  structured_data?: null | string;
 }
 
 export interface AIChatConversationQueryParams {
-  before?: null | string;
-  limit?: number;
+  cursor?: null | string;
+  size?: number;
 }
 
 export interface AIChatConversationItem {
   id: number;
   conversation_id: string;
   title: string;
-  provider_id: number;
-  model_id: string;
-  user_id: number;
   is_pinned: boolean;
-  pinned_time?: null | string;
-  last_message?: null | string;
-  message_count: number;
-  last_activity_time: string;
   created_time: string;
   updated_time?: null | string;
 }
@@ -143,14 +148,23 @@ export interface AIChatConversationItem {
 export interface AIChatConversationListResult {
   items: AIChatConversationItem[];
   has_more: boolean;
-  next_before?: null | string;
+  next_cursor?: null | string;
 }
 
 export interface AIChatMessageDetail extends AIChatMessage {
   message_index: number;
 }
 
-export interface AIChatConversationDetail extends AIChatConversationItem {
+export interface AIChatConversationDetail {
+  id: number;
+  conversation_id: string;
+  title: string;
+  provider_id: number;
+  model_id: string;
+  is_pinned: boolean;
+  message_count?: number;
+  created_time: string;
+  updated_time?: null | string;
   messages: AIChatMessageDetail[];
 }
 
@@ -165,6 +179,10 @@ export interface AIChatConversationPinParams {
 export interface AIDeleteChatMessageResult {
   deleted_conversation: boolean;
   remaining_message_count: number;
+}
+
+export interface AIChatMessageUpdateParams {
+  content: string;
 }
 
 export interface AIQuickPhraseQueryParams {
@@ -365,10 +383,21 @@ export async function clearAIChatConversationMessagesApi(
 
 export async function deleteAIChatMessageApi(
   conversationId: string,
-  messageIndex: number,
+  messageId: number,
 ) {
   return requestClient.delete<AIDeleteChatMessageResult>(
-    `/api/v1/chat/conversations/${conversationId}/messages/${messageIndex}`,
+    `/api/v1/chat/conversations/${conversationId}/messages/${messageId}`,
+  );
+}
+
+export async function updateAIChatMessageApi(
+  conversationId: string,
+  messageId: number,
+  data: AIChatMessageUpdateParams,
+) {
+  return requestClient.put(
+    `/api/v1/chat/conversations/${conversationId}/messages/${messageId}`,
+    data,
   );
 }
 
@@ -414,7 +443,7 @@ export async function streamAIChatApi(
   const response = await fetch(joinApiUrl(apiURL, '/api/v1/chat/completions'), {
     method: 'POST',
     headers: {
-      Accept: 'application/x-ndjson',
+      Accept: 'text/event-stream, application/json',
       Authorization: accessStore.accessToken
         ? `Bearer ${accessStore.accessToken}`
         : '',

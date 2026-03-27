@@ -8,6 +8,7 @@ import type {
   AIChatConversationItem,
   AIChatMessage,
   AIChatParams,
+  AIMcpResult,
   AIModelResult,
   AIProviderResult,
   AIQuickPhraseResult,
@@ -22,7 +23,6 @@ import {
   ref,
   watch,
 } from 'vue';
-import { RouterLink } from 'vue-router';
 
 import {
   confirm,
@@ -40,13 +40,13 @@ import {
 
 import { useClipboard } from '@vueuse/core';
 import { message } from 'antdv-next';
-import MarkdownRender from 'markstream-vue';
 
 import {
   clearAIChatConversationMessagesApi,
   deleteAIChatConversationApi,
   deleteAIChatMessageApi,
   getAIChatConversationDetailApi,
+  getAllAIMcpApi,
   getAllAIModelApi,
   getAllAIProviderApi,
   getAllAIQuickPhraseApi,
@@ -54,14 +54,14 @@ import {
   pinAIChatConversationApi,
   streamAIChatApi,
   updateAIChatConversationApi,
+  updateAIChatMessageApi,
 } from '#/plugins/ai/api';
 
 import {
-  compareConversations,
+  buildMessageId,
   COMPOSER_DEFAULT_HEIGHT,
   COMPOSER_FALLBACK_MAX_HEIGHT,
   COMPOSER_MIN_HEIGHT,
-  consumeBufferedLines,
   EXTRA_BODY_PLACEHOLDER,
   EXTRA_HEADERS_PLACEHOLDER,
   LOGIT_BIAS_PLACEHOLDER,
@@ -74,8 +74,32 @@ import {
   resolveChatMessageContent,
   STOP_SEQUENCES_PLACEHOLDER,
 } from './data';
+import AIChatMarkdown from './components/chat-markdown.vue';
+import { createAIChatStreamAdapter } from './x-chat-adapter';
 
-import 'markstream-vue/index.css';
+type ThinkingPanelState = {
+  autoOpened: boolean;
+  expanded: boolean;
+};
+
+type DisplayChatMessageItem =
+  | {
+      id: string;
+      kind: 'message';
+      message: ChatMessageItem;
+      thinkingContent?: string;
+      thinkingSourceId?: string;
+      thinkingStreaming?: boolean;
+      thinkingTimestamp?: string;
+    }
+  | {
+      id: string;
+      kind: 'pending-thinking';
+      thinkingContent: string;
+      thinkingSourceId: string;
+      thinkingStreaming: boolean;
+      thinkingTimestamp?: string;
+    };
 
 const { copy } = useClipboard({ legacy: true });
 const prompt = ref('');
@@ -92,6 +116,7 @@ const renameTitle = ref('');
 
 const providers = ref<AIProviderResult[]>([]);
 const models = ref<AIModelResult[]>([]);
+const mcps = ref<AIMcpResult[]>([]);
 const quickPhrases = ref<AIQuickPhraseResult[]>([]);
 const conversations = ref<AIChatConversationItem[]>([]);
 const activeMessages = ref<ChatMessageItem[]>([]);
@@ -116,6 +141,15 @@ const seed = ref<number>();
 const presencePenalty = ref<number>();
 const frequencyPenalty = ref<number>();
 const parallelToolCalls = ref(true);
+const includeThinking = ref(true);
+const reasoningEffort = ref('');
+const enableBuiltinTools = ref(true);
+const selectedMcpIds = ref<number[]>([]);
+const outputMode = ref<'native' | 'prompted' | 'text' | 'tool'>('text');
+const webSearch = ref<'builtin' | 'duckduckgo' | 'tavily'>('builtin');
+const outputSchema = ref('');
+const outputSchemaName = ref('');
+const outputSchemaDescription = ref('');
 const stopSequences = ref('');
 const extraHeaders = ref('');
 const extraBody = ref('');
@@ -126,6 +160,71 @@ const isComposerExpanded = ref(false);
 const composerExpandedBackupHeight = ref(56);
 const messageViewportHeight = ref(0);
 const quickPhrasePopoverOpen = ref(false);
+const thinkingPanelStates = ref<Record<string, ThinkingPanelState>>({});
+
+const WEB_SEARCH_OPTIONS: Array<{
+  desc: string;
+  label: string;
+  value: 'builtin' | 'duckduckgo' | 'tavily';
+}> = [
+  {
+    desc: '优先使用模型内置搜索能力',
+    label: '内置搜索',
+    value: 'builtin',
+  },
+  {
+    desc: '使用 Tavily 作为搜索来源',
+    label: 'Tavily',
+    value: 'tavily',
+  },
+  {
+    desc: '使用 DuckDuckGo 作为搜索来源',
+    label: 'DuckDuckGo',
+    value: 'duckduckgo',
+  },
+];
+
+const REASONING_EFFORT_OPTIONS: Array<{
+  desc: string;
+  label: string;
+  value: '' | 'high' | 'low' | 'medium' | 'minimal' | 'none' | 'xhigh';
+}> = [
+  {
+    desc: '使用模型默认推理强度',
+    label: '默认',
+    value: '',
+  },
+  {
+    desc: '关闭额外推理',
+    label: 'none',
+    value: 'none',
+  },
+  {
+    desc: '极低推理强度，响应更快',
+    label: 'minimal',
+    value: 'minimal',
+  },
+  {
+    desc: '较低推理强度',
+    label: 'low',
+    value: 'low',
+  },
+  {
+    desc: '平衡速度与推理质量',
+    label: 'medium',
+    value: 'medium',
+  },
+  {
+    desc: '较高推理强度',
+    label: 'high',
+    value: 'high',
+  },
+  {
+    desc: '最高推理强度，可能更慢',
+    label: 'xhigh',
+    value: 'xhigh',
+  },
+];
 
 let currentModelFetchId = 0;
 let currentConversationFetchId = 0;
@@ -144,10 +243,7 @@ function upsertConversation(summary: AIChatConversationItem) {
   if (index === -1) {
     conversations.value.unshift(summary);
   } else {
-    conversations.value[index] = {
-      ...conversations.value[index],
-      ...summary,
-    };
+    conversations.value[index] = summary;
   }
 }
 
@@ -173,6 +269,47 @@ function scrollToTop() {
   });
 }
 
+function mergeThinkingContent(previous: string, incoming: string) {
+  if (!previous) {
+    return incoming;
+  }
+  if (!incoming) {
+    return previous;
+  }
+  if (incoming.startsWith(previous)) {
+    return incoming;
+  }
+  return `${previous}\n\n${incoming}`;
+}
+
+function getThinkingPanelKey(item: DisplayChatMessageItem) {
+  return item.thinkingSourceId ?? item.id;
+}
+
+function isThinkingExpanded(item: DisplayChatMessageItem) {
+  return Boolean(thinkingPanelStates.value[getThinkingPanelKey(item)]?.expanded);
+}
+
+function toggleThinkingPanel(item: DisplayChatMessageItem) {
+  const key = getThinkingPanelKey(item);
+  const current = thinkingPanelStates.value[key];
+  thinkingPanelStates.value = {
+    ...thinkingPanelStates.value,
+    [key]: {
+      autoOpened: false,
+      expanded: !current?.expanded,
+    },
+  };
+}
+
+function getThinkingToggleLabel(item: DisplayChatMessageItem) {
+  const expanded = isThinkingExpanded(item);
+  if (item.thinkingStreaming) {
+    return expanded ? '正在思考，收起思维链' : '正在思考';
+  }
+  return expanded ? '已思考，收起思维链' : '已思考，查看思维链';
+}
+
 function resetAdvancedSettings() {
   maxTokens.value = undefined;
   temperature.value = 1;
@@ -182,6 +319,15 @@ function resetAdvancedSettings() {
   presencePenalty.value = undefined;
   frequencyPenalty.value = undefined;
   parallelToolCalls.value = true;
+  includeThinking.value = true;
+  reasoningEffort.value = '';
+  enableBuiltinTools.value = true;
+  selectedMcpIds.value = [];
+  outputMode.value = 'text';
+  webSearch.value = 'builtin';
+  outputSchema.value = '';
+  outputSchemaName.value = '';
+  outputSchemaDescription.value = '';
   stopSequences.value = '';
   extraHeaders.value = '';
   extraBody.value = '';
@@ -211,20 +357,16 @@ function createNewConversation() {
 }
 
 function syncConversationSummaryFromDetail(detail: AIChatConversationDetail) {
+  const existingConversation = conversations.value.find(
+    (item) => item.conversation_id === detail.conversation_id,
+  );
   upsertConversation({
     conversation_id: detail.conversation_id,
     created_time: detail.created_time,
     id: detail.id,
-    is_pinned: detail.is_pinned,
-    last_activity_time: detail.last_activity_time,
-    last_message: detail.last_message,
-    message_count: detail.message_count,
-    model_id: detail.model_id,
-    pinned_time: detail.pinned_time,
-    provider_id: detail.provider_id,
+    is_pinned: existingConversation?.is_pinned ?? false,
     title: detail.title,
     updated_time: detail.updated_time,
-    user_id: detail.user_id,
   });
 }
 
@@ -235,11 +377,83 @@ function finalizeStreamingMessages() {
   }));
 }
 
+function insertOptimisticUserMessage(content: string) {
+  const hasStreamingUser = activeMessages.value.some(
+    (item) => item.role === 'user' && item.streaming,
+  );
+  if (hasStreamingUser) {
+    return;
+  }
+
+  activeMessages.value.push({
+    content,
+    conversation_id: activeConversationId.value ?? null,
+    error_message: null,
+    id: buildMessageId(`streaming-user-${Date.now()}`),
+    is_error: false,
+    message_id: null,
+    message_index: activeMessages.value.length,
+    role: 'user',
+    structured_data: null,
+    streaming: true,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+function insertStreamingModelSkeleton() {
+  const hasStreamingModel = activeMessages.value.some(
+    (item) => item.role === 'model' && item.streaming,
+  );
+  if (hasStreamingModel) {
+    return;
+  }
+
+  activeMessages.value.push({
+    content: '',
+    conversation_id: activeConversationId.value ?? null,
+    error_message: null,
+    id: `streaming-model-${Date.now()}`,
+    is_error: false,
+    message_id: null,
+    message_index: activeMessages.value.length,
+    role: 'model',
+    structured_data: null,
+    streaming: true,
+    timestamp: new Date().toISOString(),
+  });
+}
+
 function stopStreaming() {
   abortController?.abort();
   abortController = undefined;
   sending.value = false;
   finalizeStreamingMessages();
+}
+
+function findStreamingMessage(data: AIChatMessage) {
+  for (let index = activeMessages.value.length - 1; index >= 0; index -= 1) {
+    const item = activeMessages.value[index];
+    if (!item) {
+      continue;
+    }
+
+    if (data.message_id !== undefined && data.message_id !== null) {
+      if (item.message_id === data.message_id) {
+        return item;
+      }
+      continue;
+    }
+
+    if (
+      item.role === data.role &&
+      (data.message_index === undefined ||
+        data.message_index === item.message_index)
+    ) {
+      return item;
+    }
+  }
+
+  return undefined;
 }
 
 function applyStreamMessage(data: AIChatMessage) {
@@ -257,33 +471,40 @@ function applyStreamMessage(data: AIChatMessage) {
       created_time: data.timestamp,
       id: 0,
       is_pinned: false,
-      last_activity_time: data.timestamp,
-      last_message: messageContent,
-      message_count: activeMessages.value.length + 1,
-      model_id: selectedModelId.value || '',
-      pinned_time: null,
-      provider_id: selectedProviderId.value || 0,
       title: draftConversationTitle.value,
       updated_time: data.timestamp,
-      user_id: 0,
     });
   }
 
+  const existingMessage = findStreamingMessage(data);
+
   if (data.role === 'user') {
-    activeMessages.value.push(
-      normalizeMessage(
-        data,
-        activeMessages.value.length,
-        activeConversationId.value,
-      ),
-    );
+    if (existingMessage) {
+      existingMessage.content = messageContent;
+      existingMessage.conversation_id =
+        data.conversation_id ?? existingMessage.conversation_id;
+      existingMessage.error_message =
+        data.error_message ?? existingMessage.error_message;
+      existingMessage.is_error = data.is_error ?? existingMessage.is_error;
+      existingMessage.message_id = data.message_id ?? existingMessage.message_id;
+      existingMessage.message_index =
+        data.message_index ?? existingMessage.message_index;
+      existingMessage.structured_data =
+        data.structured_data ?? existingMessage.structured_data;
+      existingMessage.timestamp = data.timestamp;
+      existingMessage.streaming = true;
+    } else {
+      activeMessages.value.push(
+        normalizeMessage(
+          data,
+          activeMessages.value.length,
+          activeConversationId.value,
+        ),
+      );
+    }
   } else {
-    const lastMessage = activeMessages.value.at(-1);
-    if (
-      lastMessage?.role === 'model' &&
-      (data.message_index === undefined ||
-        data.message_index === lastMessage.message_index)
-    ) {
+    if (existingMessage && existingMessage.role === data.role) {
+      const lastMessage = existingMessage;
       lastMessage.content = mergeModelContent(
         lastMessage.content,
         messageContent,
@@ -292,8 +513,11 @@ function applyStreamMessage(data: AIChatMessage) {
         data.conversation_id ?? lastMessage.conversation_id;
       lastMessage.error_message = data.error_message ?? lastMessage.error_message;
       lastMessage.is_error = data.is_error ?? lastMessage.is_error;
+      lastMessage.message_id = data.message_id ?? lastMessage.message_id;
       lastMessage.message_index =
         data.message_index ?? lastMessage.message_index;
+      lastMessage.structured_data =
+        data.structured_data ?? lastMessage.structured_data;
       lastMessage.timestamp = data.timestamp;
       lastMessage.streaming = true;
     } else {
@@ -314,15 +538,8 @@ function applyStreamMessage(data: AIChatMessage) {
       created_time: existingConversation?.created_time || data.timestamp,
       id: existingConversation?.id || 0,
       is_pinned: existingConversation?.is_pinned || false,
-      last_activity_time: data.timestamp,
-      last_message: messageContent,
-      message_count: activeMessages.value.length,
-      model_id: selectedModelId.value || '',
-      pinned_time: existingConversation?.pinned_time || null,
-      provider_id: selectedProviderId.value || 0,
       title: existingConversation?.title || draftConversationTitle.value,
       updated_time: data.timestamp,
-      user_id: existingConversation?.user_id || 0,
     });
   }
 
@@ -338,16 +555,21 @@ async function fetchProviders() {
   }
 }
 
-async function handleProviderModelPopoverOpenChange(open: boolean) {
-  if (!open) {
+async function fetchMcps() {
+  mcps.value = await getAllAIMcpApi();
+}
+
+function isMcpSelected(mcpId: number) {
+  return selectedMcpIds.value.includes(mcpId);
+}
+
+function toggleMcpSelection(mcpId: number) {
+  if (isMcpSelected(mcpId)) {
+    selectedMcpIds.value = selectedMcpIds.value.filter((id) => id !== mcpId);
     return;
   }
 
-  await fetchProviders();
-
-  if (selectedProviderId.value) {
-    await fetchModelsByProvider(selectedProviderId.value);
-  }
+  selectedMcpIds.value = [...selectedMcpIds.value, mcpId];
 }
 
 async function handleQuickPhrasePopoverOpenChange(open: boolean) {
@@ -386,10 +608,7 @@ async function fetchModelsByProvider(providerId?: number) {
 
   models.value = data;
 
-  if (
-    !activeConversationId.value &&
-    !data.some((item) => item.model_id === selectedModelId.value)
-  ) {
+  if (!data.some((item) => item.model_id === selectedModelId.value)) {
     selectedModelId.value = undefined;
   }
 }
@@ -398,14 +617,7 @@ async function fetchQuickPhrases() {
   quickPhraseLoading.value = true;
   try {
     const data = await getAllAIQuickPhraseApi();
-    quickPhrases.value = [...data].toSorted((a, b) => {
-      if ((a.sort || 0) !== (b.sort || 0)) {
-        return (a.sort || 0) - (b.sort || 0);
-      }
-      return (
-        new Date(b.created_time).getTime() - new Date(a.created_time).getTime()
-      );
-    });
+    quickPhrases.value = data;
   } finally {
     quickPhraseLoading.value = false;
   }
@@ -420,8 +632,8 @@ async function fetchConversations(append = false) {
 
   try {
     const data = await getRecentAIChatConversationsApi({
-      before: append ? conversationBeforeCursor.value : undefined,
-      limit: 20,
+      cursor: append ? conversationBeforeCursor.value : undefined,
+      size: 20,
     });
 
     if (append) {
@@ -437,7 +649,7 @@ async function fetchConversations(append = false) {
     }
 
     hasMoreConversations.value = data.has_more;
-    conversationBeforeCursor.value = data.next_before || undefined;
+    conversationBeforeCursor.value = data.next_cursor || undefined;
   } finally {
     if (append) {
       sidebarMoreLoading.value = false;
@@ -509,8 +721,9 @@ function appendQuickPhrase(item: AIQuickPhraseResult) {
 
 function beginEditMessage(item: ChatMessageItem) {
   if (
-    (item.role !== 'user' && item.role !== 'model') ||
-    item.message_index === undefined
+    item.role !== 'user' ||
+    item.message_id === undefined ||
+    item.message_id === null
   ) {
     return;
   }
@@ -540,11 +753,16 @@ function updateMessageContent(target: ChatMessageItem, content: string) {
   );
 }
 
-function saveEditedMessage() {
+async function saveEditedMessage() {
   const trimmedContent = editingMessageDraft.value.trim();
   const targetMessage = editingMessage.value;
 
-  if (!targetMessage) {
+  if (
+    !targetMessage ||
+    !targetMessage.conversation_id ||
+    targetMessage.message_id === undefined ||
+    targetMessage.message_id === null
+  ) {
     return;
   }
 
@@ -553,8 +771,12 @@ function saveEditedMessage() {
     return;
   }
 
+  await updateAIChatMessageApi(targetMessage.conversation_id, targetMessage.message_id, {
+    content: trimmedContent,
+  });
   updateMessageContent(targetMessage, trimmedContent);
   cancelEditMessage();
+  await loadConversationDetail(targetMessage.conversation_id);
   message.success('消息内容已保存');
 }
 
@@ -562,7 +784,11 @@ async function resendEditedMessage() {
   const trimmedContent = editingMessageDraft.value.trim();
   const targetMessage = editingMessage.value;
 
-  if (!targetMessage || targetMessage.message_index === undefined) {
+  if (
+    !targetMessage ||
+    targetMessage.message_id === undefined ||
+    targetMessage.message_id === null
+  ) {
     return;
   }
 
@@ -576,11 +802,20 @@ async function resendEditedMessage() {
     ...targetMessage,
     content: trimmedContent,
   };
+  if (targetMessage.conversation_id) {
+    await updateAIChatMessageApi(targetMessage.conversation_id, targetMessage.message_id, {
+      content: trimmedContent,
+    });
+  }
   await submitChat(undefined, true, trimmedContent);
 }
 
 async function regenerateUserMessage(item: ChatMessageItem) {
-  if (item.role !== 'user' || item.message_index === undefined) {
+  if (
+    item.role !== 'user' ||
+    item.message_id === undefined ||
+    item.message_id === null
+  ) {
     return;
   }
 
@@ -654,7 +889,7 @@ async function removeConversation(conversationId: string) {
   removeConversationSummary(conversationId);
 
   if (activeConversationId.value === conversationId) {
-    const nextConversation = sortedConversations.value.find(
+    const nextConversation = conversations.value.find(
       (item) => item.conversation_id !== conversationId,
     );
 
@@ -739,9 +974,7 @@ async function clearMessages() {
   if (conversation) {
     upsertConversation({
       ...conversation,
-      last_activity_time: new Date().toISOString(),
-      last_message: null,
-      message_count: 0,
+      updated_time: new Date().toISOString(),
     });
   }
   streamError.value = '';
@@ -749,7 +982,11 @@ async function clearMessages() {
 }
 
 async function deleteMessageChain(item: ChatMessageItem) {
-  if (!activeConversationId.value || item.message_index === undefined) {
+  if (
+    !activeConversationId.value ||
+    item.message_id === undefined ||
+    item.message_id === null
+  ) {
     return;
   }
 
@@ -757,13 +994,13 @@ async function deleteMessageChain(item: ChatMessageItem) {
 
   const result = await deleteAIChatMessageApi(
     activeConversationId.value,
-    item.message_index,
+    item.message_id,
   );
 
   if (result.deleted_conversation) {
     const deletedConversationId = activeConversationId.value;
     removeConversationSummary(deletedConversationId);
-    const nextConversation = sortedConversations.value.find(
+    const nextConversation = conversations.value.find(
       (conversation) => conversation.conversation_id !== deletedConversationId,
     );
 
@@ -782,17 +1019,21 @@ async function deleteMessageChain(item: ChatMessageItem) {
 }
 
 async function regenerateMessage(item: ChatMessageItem) {
-  if (item.role !== 'model' || item.message_index === undefined) {
+  if (
+    item.role !== 'model' ||
+    item.message_id === undefined ||
+    item.message_id === null
+  ) {
     return;
   }
 
   regeneratingMessageIndex.value = item.message_index;
   editingMessage.value = undefined;
-  await submitChat(item.message_index);
+  await submitChat(item.message_id);
 }
 
 async function submitChat(
-  regenerateMessageIndex?: number,
+  regenerateMessageId?: number,
   notifyInvalid = false,
   overridePromptText?: string,
 ) {
@@ -808,11 +1049,11 @@ async function submitChat(
   }
 
   const promptText =
-    regenerateMessageIndex === undefined
+    regenerateMessageId === undefined
       ? (overridePromptText ?? prompt.value).trim()
       : undefined;
 
-  if (regenerateMessageIndex === undefined && !promptText) {
+  if (regenerateMessageId === undefined && !promptText) {
     if (notifyInvalid) {
       message.warning('请输入消息内容');
     }
@@ -820,6 +1061,17 @@ async function submitChat(
   }
 
   const editingMessageIndex = editingMessage.value?.message_index;
+  const editingMessageId = editingMessage.value?.message_id;
+  if (editingMessage.value && editingMessageId == null) {
+    message.warning('当前消息暂不可编辑，请刷新后重试');
+    return;
+  }
+  const chatMode: AIChatParams['mode'] =
+    regenerateMessageId != null
+      ? 'regenerate'
+      : editingMessageId != null
+        ? 'edit'
+        : 'create';
   const submittedTitle =
     activeConversationId.value || !promptText
       ? draftConversationTitle.value
@@ -829,8 +1081,8 @@ async function submitChat(
   try {
     payload = {
       conversation_id: activeConversationId.value,
-      edit_message_index: editingMessageIndex,
       extra_body: extraBody.value.trim() || undefined,
+      enable_builtin_tools: enableBuiltinTools.value,
       extra_headers: parseJsonField<Record<string, string>>(
         extraHeaders.value,
         '额外请求头',
@@ -845,11 +1097,23 @@ async function submitChat(
           value !== null && typeof value === 'object' && !Array.isArray(value),
       ),
       max_tokens: maxTokens.value,
+      mcp_ids: selectedMcpIds.value.length > 0 ? selectedMcpIds.value : undefined,
       model_id: selectedModelId.value,
+      output_mode: outputMode.value,
+      output_schema: parseJsonField<Record<string, unknown>>(
+        outputSchema.value,
+        '输出 Schema',
+        (value) =>
+          value !== null && typeof value === 'object' && !Array.isArray(value),
+      ),
+      output_schema_description: outputSchemaDescription.value.trim() || undefined,
+      output_schema_name: outputSchemaName.value.trim() || undefined,
       parallel_tool_calls: parallelToolCalls.value,
       presence_penalty: presencePenalty.value,
       provider_id: selectedProviderId.value,
-      regenerate_message_index: regenerateMessageIndex,
+      include_thinking: includeThinking.value,
+      mode: chatMode,
+      reasoning_effort: reasoningEffort.value.trim() || undefined,
       seed: seed.value,
       stop_sequences: parseJsonField<string[]>(
         stopSequences.value,
@@ -859,8 +1123,14 @@ async function submitChat(
       temperature: temperature.value,
       timeout: timeout.value,
       top_p: topP.value,
-      user_prompt:
-        regenerateMessageIndex === undefined ? promptText || null : null,
+      web_search: webSearch.value,
+      ...(chatMode === 'edit'
+        ? { edit_message_id: editingMessageId, user_prompt: promptText! }
+        : {}),
+      ...(chatMode === 'create' ? { user_prompt: promptText! } : {}),
+      ...(chatMode === 'regenerate'
+        ? { regenerate_message_id: regenerateMessageId! }
+        : {}),
     };
   } catch (error) {
     message.error((error as Error).message);
@@ -871,9 +1141,9 @@ async function submitChat(
     activeMessages.value = activeMessages.value.filter(
       (item) => item.message_index < editingMessageIndex,
     );
-  } else if (regenerateMessageIndex !== undefined) {
+  } else if (regeneratingMessageIndex.value !== undefined) {
     activeMessages.value = activeMessages.value.filter(
-      (item) => item.message_index < regenerateMessageIndex,
+      (item) => item.message_index < regeneratingMessageIndex.value!,
     );
   }
 
@@ -886,12 +1156,23 @@ async function submitChat(
   abortController = new AbortController();
   sending.value = true;
   streamError.value = '';
-  if (regenerateMessageIndex === undefined) {
+  if (regenerateMessageId === undefined) {
     prompt.value = '';
   }
+  if (regenerateMessageId === undefined && editingMessageId == null && promptText) {
+    insertOptimisticUserMessage(promptText);
+  }
+  insertStreamingModelSkeleton();
 
-  let chunkBuffer = '';
   let streamedConversationId = activeConversationId.value;
+  const streamAdapter = createAIChatStreamAdapter({
+    onMessage: (data) => {
+      if (data.conversation_id) {
+        streamedConversationId = data.conversation_id;
+      }
+      applyStreamMessage(data);
+    },
+  });
 
   try {
     await streamAIChatApi(payload, {
@@ -901,24 +1182,10 @@ async function submitChat(
           return;
         }
 
-        chunkBuffer += chunk;
-        chunkBuffer = consumeBufferedLines(chunkBuffer, (data) => {
-          if (data.conversation_id) {
-            streamedConversationId = data.conversation_id;
-          }
-          applyStreamMessage(data);
-        });
+        streamAdapter.consumeChunk(chunk);
       },
     });
-
-    if (chunkBuffer.trim()) {
-      chunkBuffer = consumeBufferedLines(`${chunkBuffer}\n`, (data) => {
-        if (data.conversation_id) {
-          streamedConversationId = data.conversation_id;
-        }
-        applyStreamMessage(data);
-      });
-    }
+    await streamAdapter.flush();
 
     finalizeStreamingMessages();
     await fetchConversations(false);
@@ -926,10 +1193,10 @@ async function submitChat(
     if (streamedConversationId) {
       activeConversationId.value = streamedConversationId;
       await loadConversationDetail(streamedConversationId);
-    } else if (sortedConversations.value[0]) {
-      activeConversationId.value = sortedConversations.value[0].conversation_id;
+    } else if (conversations.value[0]) {
+      activeConversationId.value = conversations.value[0].conversation_id;
       await loadConversationDetail(
-        sortedConversations.value[0].conversation_id,
+        conversations.value[0].conversation_id,
       );
     }
   } catch (error) {
@@ -938,7 +1205,7 @@ async function submitChat(
       message.error(streamError.value);
 
       if (
-        regenerateMessageIndex === undefined &&
+        regenerateMessageId === undefined &&
         editingMessageIndex === undefined &&
         !activeConversationId.value
       ) {
@@ -954,6 +1221,7 @@ async function submitChat(
       await loadConversationDetail(streamedConversationId);
     }
   } finally {
+    await streamAdapter.cancel();
     if (streamId === currentStreamId) {
       abortController = undefined;
       sending.value = false;
@@ -1082,8 +1350,96 @@ const activeConversation = computed(() => {
   );
 });
 
-const sortedConversations = computed(() => {
-  return [...conversations.value].toSorted(compareConversations);
+const displayMessages = computed<DisplayChatMessageItem[]>(() => {
+  const items: DisplayChatMessageItem[] = [];
+  let pendingThinking:
+    | {
+        content: string;
+        sourceId: string;
+        streaming: boolean;
+        timestamp?: string;
+      }
+    | undefined;
+
+  const flushPendingThinking = () => {
+    if (!pendingThinking) {
+      return;
+    }
+    items.push({
+      id: `thinking-${pendingThinking.sourceId}`,
+      kind: 'pending-thinking',
+      thinkingContent: pendingThinking.content,
+      thinkingSourceId: pendingThinking.sourceId,
+      thinkingStreaming: pendingThinking.streaming,
+      thinkingTimestamp: pendingThinking.timestamp,
+    });
+    pendingThinking = undefined;
+  };
+
+  for (const message of activeMessages.value) {
+    if (message.role === 'thinking') {
+      const previousItem = items[items.length - 1];
+      if (
+        previousItem?.kind === 'message' &&
+        previousItem.message.role === 'model' &&
+        previousItem.message.streaming &&
+        previousItem.message.message_index === message.message_index
+      ) {
+        previousItem.thinkingContent = previousItem.thinkingContent
+          ? mergeThinkingContent(previousItem.thinkingContent, message.content)
+          : message.content;
+        previousItem.thinkingSourceId ??= message.id;
+        previousItem.thinkingStreaming =
+          previousItem.thinkingStreaming || Boolean(message.streaming);
+        previousItem.thinkingTimestamp =
+          message.timestamp || previousItem.thinkingTimestamp;
+        continue;
+      }
+
+      pendingThinking = pendingThinking
+        ? {
+            content: mergeThinkingContent(
+              pendingThinking.content,
+              message.content,
+            ),
+            sourceId: pendingThinking.sourceId,
+            streaming: pendingThinking.streaming || Boolean(message.streaming),
+            timestamp: message.timestamp || pendingThinking.timestamp,
+          }
+        : {
+            content: message.content,
+            sourceId: message.id,
+            streaming: Boolean(message.streaming),
+            timestamp: message.timestamp,
+          };
+      continue;
+    }
+
+    if (message.role === 'model') {
+      items.push({
+        id: message.id,
+        kind: 'message',
+        message,
+        thinkingContent: pendingThinking?.content,
+        thinkingSourceId: pendingThinking?.sourceId,
+        thinkingStreaming: pendingThinking?.streaming,
+        thinkingTimestamp: pendingThinking?.timestamp,
+      });
+      pendingThinking = undefined;
+      continue;
+    }
+
+    flushPendingThinking();
+    items.push({
+      id: message.id,
+      kind: 'message',
+      message,
+    });
+  }
+
+  flushPendingThinking();
+
+  return items;
 });
 
 const enabledProviders = computed(() => {
@@ -1141,10 +1497,7 @@ const activeConversationSubtitle = computed(() => {
     return '发送首条消息后自动创建会话';
   }
 
-  const labels = [
-    `${activeConversation.value.message_count} 条消息`,
-    `最后活跃 ${parseDateLabel(activeConversation.value.last_activity_time)}`,
-  ];
+  const labels = [`创建于 ${parseDateLabel(activeConversation.value.created_time)}`];
   if (activeConversation.value.is_pinned) {
     labels.unshift('已置顶');
   }
@@ -1166,10 +1519,7 @@ const selectedModelLabel = computed(() => {
   );
 });
 
-const providerModelLabel = computed(() => {
-  if (!selectedProviderId.value && !selectedModelId.value) {
-    return '请选择供应商和模型';
-  }
+const selectedProviderModelLabel = computed(() => {
   return `${selectedProviderLabel.value} / ${selectedModelLabel.value}`;
 });
 
@@ -1183,6 +1533,15 @@ const hasAdvancedSettings = computed(() => {
     presencePenalty.value !== undefined ||
     frequencyPenalty.value !== undefined ||
     parallelToolCalls.value !== true ||
+    includeThinking.value !== true ||
+    reasoningEffort.value.trim() ||
+    enableBuiltinTools.value !== true ||
+    selectedMcpIds.value.length > 0 ||
+    outputMode.value !== 'text' ||
+    webSearch.value !== 'builtin' ||
+    outputSchema.value.trim() ||
+    outputSchemaName.value.trim() ||
+    outputSchemaDescription.value.trim() ||
     stopSequences.value.trim() ||
     extraHeaders.value.trim() ||
     extraBody.value.trim() ||
@@ -1194,9 +1553,13 @@ const canClearMessages = computed(() => {
   return Boolean(activeConversationId.value && activeMessages.value.length > 0);
 });
 
+const canCreateNewConversation = computed(() => {
+  return prompt.value.trim().length > 0;
+});
+
 const composerHint = computed(() => {
   if (editingMessage.value?.message_index !== undefined) {
-    return `正在编辑第 ${editingMessage.value.message_index + 1} 条${editingMessage.value.role === 'user' ? '用户' : 'AI'}消息`;
+    return `正在编辑第 ${editingMessage.value.message_index + 1} 条用户消息`;
   }
   if (regeneratingMessageIndex.value !== undefined) {
     return `正在重新生成第 ${regeneratingMessageIndex.value + 1} 条 AI 回复`;
@@ -1212,6 +1575,50 @@ watch(
   { immediate: true },
 );
 
+watch(
+  displayMessages,
+  (items) => {
+    const nextStates: Record<string, ThinkingPanelState> = {};
+
+    for (const item of items) {
+      if (
+        !('thinkingContent' in item) ||
+        !item.thinkingContent ||
+        !item.thinkingSourceId
+      ) {
+        continue;
+      }
+
+      const key = getThinkingPanelKey(item);
+      const previous = thinkingPanelStates.value[key];
+      const shouldAutoExpand = Boolean(item.thinkingStreaming);
+
+      if (shouldAutoExpand) {
+        nextStates[key] = {
+          autoOpened: true,
+          expanded: true,
+        };
+        continue;
+      }
+
+      if (previous?.autoOpened) {
+        nextStates[key] = {
+          autoOpened: false,
+          expanded: false,
+        };
+        continue;
+      }
+
+      if (previous) {
+        nextStates[key] = previous;
+      }
+    }
+
+    thinkingPanelStates.value = nextStates;
+  },
+  { immediate: true },
+);
+
 const [SettingsModal, settingsModalApi] = useVbenModal({
   class: 'w-5/12',
   footer: false,
@@ -1223,11 +1630,13 @@ onMounted(async () => {
   await nextTick();
   setupComposerLayoutObserver();
 
+  await fetchProviders();
+  await fetchMcps();
   await fetchConversations(false);
 
-  if (sortedConversations.value[0]) {
-    activeConversationId.value = sortedConversations.value[0].conversation_id;
-    await loadConversationDetail(sortedConversations.value[0].conversation_id);
+  if (conversations.value[0]) {
+    activeConversationId.value = conversations.value[0].conversation_id;
+    await loadConversationDetail(conversations.value[0].conversation_id);
   } else {
     createNewConversation();
   }
@@ -1258,23 +1667,23 @@ onBeforeUnmount(() => {
         <div
           class="flex-1 overflow-y-auto p-3"
           :class="
-            sortedConversations.length === 0
+            conversations.length === 0
               ? 'flex items-center justify-center'
               : 'space-y-3'
           "
         >
           <a-spin
-            v-if="sidebarLoading && sortedConversations.length === 0"
+            v-if="sidebarLoading && conversations.length === 0"
             class="block py-10"
           />
           <a-empty
-            v-else-if="sortedConversations.length === 0"
+            v-else-if="conversations.length === 0"
             description="暂无聊天历史"
             :image="null"
           />
           <template v-else>
             <a-dropdown
-              v-for="conversation in sortedConversations"
+              v-for="conversation in conversations"
               :key="conversation.conversation_id"
               :menu="{
                 items: getConversationMenuItems(conversation),
@@ -1316,16 +1725,10 @@ onBeforeUnmount(() => {
                     </span>
                   </span>
                   <span
-                    class="mt-2 block truncate text-xs text-muted-foreground"
-                  >
-                    {{ conversation.last_message || '暂无消息内容' }}
-                  </span>
-                  <span
                     class="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground"
                   >
-                    <span>{{ conversation.message_count }} 条消息</span>
                     <span>{{
-                      parseDateLabel(conversation.last_activity_time)
+                      parseDateLabel(conversation.updated_time || conversation.created_time)
                     }}</span>
                   </span>
                 </button>
@@ -1372,19 +1775,75 @@ onBeforeUnmount(() => {
                 </div>
               </template>
               <template v-else>
-                <div class="flex items-center gap-2">
-                  <div class="truncate text-sm font-semibold text-foreground">
-                    {{ activeConversationTitle }}
+                <div class="flex min-w-0 items-center justify-between gap-4">
+                  <div class="inline-flex min-w-0 max-w-full items-center gap-2">
+                    <div
+                      class="min-w-0 max-w-[220px] truncate text-[13px] font-semibold leading-7 text-foreground"
+                      :title="activeConversationTitle"
+                    >
+                      {{ activeConversationTitle }}
+                    </div>
+                    <span
+                      v-if="activeConversation?.is_pinned"
+                      class="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
+                    >
+                      置顶
+                    </span>
+                    <span class="shrink-0 text-xs leading-none text-muted-foreground"
+                      >&gt;</span
+                    >
+                    <a-popover placement="bottomLeft" trigger="click">
+                      <template #content>
+                        <div class="w-[280px] space-y-3">
+                          <div>
+                            <div class="mb-2 text-xs font-medium text-foreground">
+                              供应商
+                            </div>
+                            <a-select
+                              v-model:value="selectedProviderId"
+                              class="w-full"
+                              :disabled="sending || resourcesLoading"
+                              :options="providerOptions"
+                              placeholder="请选择供应商"
+                            />
+                          </div>
+                          <div>
+                            <div class="mb-2 text-xs font-medium text-foreground">
+                              模型
+                            </div>
+                            <a-select
+                              v-model:value="selectedModelId"
+                              class="w-full"
+                              :disabled="
+                                sending ||
+                                resourcesLoading ||
+                                modelOptions.length === 0
+                              "
+                              :options="modelOptions"
+                              placeholder="请选择模型"
+                            />
+                          </div>
+                        </div>
+                      </template>
+                      <button
+                        class="inline-flex min-w-0 max-w-[360px] items-center gap-1 rounded-md px-1 py-1 text-[13px] leading-7 text-foreground transition-colors hover:bg-accent/55"
+                        :disabled="sending || resourcesLoading"
+                        type="button"
+                      >
+                        <span class="truncate">{{ selectedProviderModelLabel }}</span>
+                        <IconifyIcon
+                          class="size-3.5 shrink-0 text-muted-foreground"
+                          icon="mdi:chevron-down"
+                        />
+                      </button>
+                    </a-popover>
                   </div>
-                  <span
-                    v-if="activeConversation?.is_pinned"
-                    class="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
+                  <div
+                    class="min-w-0 flex-1 truncate text-right text-xs leading-tight text-muted-foreground"
+                    :title="activeConversationSubtitle"
                   >
-                    置顶
-                  </span>
-                </div>
-                <div class="mt-1 text-xs text-muted-foreground">
-                  {{ activeConversationSubtitle }}
+                    {{ activeConversationSubtitle }}
+                  </div>
                 </div>
               </template>
             </div>
@@ -1414,55 +1873,118 @@ onBeforeUnmount(() => {
           />
           <a-spin v-if="detailLoading" class="block py-20" />
           <div
-            v-else-if="activeMessages.length === 0"
+            v-else-if="displayMessages.length === 0"
             class="flex min-h-full items-center justify-center"
           >
             <a-empty description="选择模型后开始对话，历史会自动保存" />
           </div>
           <template v-else>
             <div
-              v-for="item in activeMessages"
+              v-for="item in displayMessages"
               :key="item.id"
               class="ai-message mb-3.5 flex"
-              :class="item.role === 'user' ? 'justify-end' : 'justify-start'"
+              :class="
+                item.kind === 'message' && item.message.role === 'user'
+                  ? 'justify-end'
+                  : 'justify-start'
+              "
             >
               <div
                 class="flex max-w-[92%] flex-col animate-[ai-message-enter_0.24s_ease-out] md:max-w-[84%]"
-                :class="item.role === 'user' ? 'items-end' : 'items-start'"
+                :class="
+                  item.kind === 'message' && item.message.role === 'user'
+                    ? 'items-end'
+                    : 'items-start'
+                "
               >
                 <div
                   class="mb-1.5 inline-flex items-center gap-2 px-1"
                   :class="
-                    item.role === 'user' ? 'justify-end' : 'justify-start'
+                    item.kind === 'message' && item.message.role === 'user'
+                      ? 'justify-end'
+                      : 'justify-start'
                   "
                 >
                   <span
                     class="inline-flex h-[22px] min-w-7 items-center justify-center rounded-full px-2 text-[11px] font-semibold tracking-[0.02em]"
                     :class="
-                      item.role === 'user'
+                      item.kind === 'message' && item.message.role === 'user'
                         ? 'border border-primary/20 bg-primary/12 text-primary'
                         : 'border border-border bg-background text-muted-foreground'
                     "
                   >
-                    {{ item.role === 'user' ? '你' : 'AI' }}
+                    {{
+                      item.kind === 'message' && item.message.role === 'user'
+                        ? '你'
+                        : 'AI'
+                    }}
                   </span>
                   <span class="text-xs text-muted-foreground">
-                    {{ parseDateLabel(item.timestamp) }}
+                    {{
+                      parseDateLabel(
+                        item.kind === 'message'
+                          ? item.message.timestamp
+                          : item.thinkingTimestamp,
+                      )
+                    }}
                   </span>
                 </div>
 
                 <div
                   class="relative overflow-hidden border px-4 py-2.5 text-sm leading-[1.65] text-foreground shadow-[0_10px_24px_-18px_rgb(15_23_42/0.42),0_1px_2px_0_rgb(15_23_42/0.06)] transition-all duration-200 hover:shadow-[0_18px_36px_-24px_rgb(15_23_42/0.38),0_4px_10px_0_rgb(15_23_42/0.06)]"
                   :class="
-                    item.is_error
+                    item.kind === 'message' && item.message.is_error
                       ? 'rounded-[12px] border-destructive/25 bg-[linear-gradient(180deg,hsl(var(--destructive)/0.1),hsl(var(--destructive)/0.04))]'
-                      : item.role === 'user'
+                      : item.kind === 'message' && item.message.role === 'user'
                       ? 'rounded-[12px] border-primary/20 bg-[linear-gradient(180deg,hsl(var(--primary)/0.14),hsl(var(--primary)/0.08))]'
                       : 'rounded-[12px] border-border bg-[radial-gradient(circle_at_top_left,hsl(var(--accent)/0.35),transparent_34%),linear-gradient(180deg,hsl(var(--card)),hsl(var(--background)))]'
                   "
                 >
+                  <div
+                    v-if="item.kind === 'pending-thinking' || item.thinkingContent"
+                    class="ai-thinking-panel mb-3"
+                    :class="{ 'ai-thinking-panel--open': isThinkingExpanded(item) }"
+                  >
+                    <button
+                      class="ai-thinking-panel__toggle"
+                      type="button"
+                      @click="toggleThinkingPanel(item)"
+                    >
+                      <span class="inline-flex items-center gap-2">
+                        <span
+                          class="size-2 rounded-full bg-amber-500"
+                          :class="{
+                            'animate-[ai-status-pulse_1.4s_ease-out_infinite]':
+                              item.thinkingStreaming,
+                          }"
+                        ></span>
+                        <span>{{ getThinkingToggleLabel(item) }}</span>
+                      </span>
+                      <IconifyIcon
+                        class="size-4 transition-transform"
+                        :class="{ 'rotate-180': isThinkingExpanded(item) }"
+                        icon="mdi:chevron-down"
+                      />
+                    </button>
+                    <div
+                      v-if="isThinkingExpanded(item)"
+                      class="ai-thinking-panel__content ai-markdown"
+                    >
+                      <div
+                        v-if="item.thinkingStreaming"
+                        class="whitespace-pre-wrap text-[13px] leading-6 text-muted-foreground"
+                      >
+                        {{ item.thinkingContent || '' }}
+                      </div>
+                      <AIChatMarkdown
+                        v-else
+                        custom-id="ai-chat-thinking"
+                        :content="item.thinkingContent || ''"
+                      />
+                    </div>
+                  </div>
                   <textarea
-                    v-if="isEditingMessage(item)"
+                    v-if="item.kind === 'message' && isEditingMessage(item.message)"
                     v-model="editingMessageDraft"
                     :disabled="sending"
                     class="block min-h-[88px] w-[min(520px,70vw)] resize-none overflow-y-auto border-0 bg-transparent p-0 leading-[1.7] text-inherit outline-none placeholder:text-muted-foreground/70"
@@ -1470,60 +1992,89 @@ onBeforeUnmount(() => {
                     rows="3"
                     spellcheck="false"
                   ></textarea>
-                  <div v-else-if="item.role === 'user'" class="whitespace-pre-wrap">
-                    {{ item.content }}
+                  <div
+                    v-else-if="
+                      item.kind === 'message' && item.message.role === 'user'
+                    "
+                    class="whitespace-pre-wrap"
+                  >
+                    {{ item.message.content }}
                   </div>
-                  <div v-else class="ai-markdown">
-                    <MarkdownRender
+                  <div
+                    v-else-if="
+                      item.kind === 'message' &&
+                      item.message.role === 'model' &&
+                      item.message.streaming &&
+                      !item.message.content &&
+                      !item.message.structured_data &&
+                      !item.message.is_error
+                    "
+                    class="flex min-h-10 items-center"
+                  >
+                    <div class="flex w-[180px] items-center gap-2">
+                      <span class="h-2 flex-1 animate-pulse rounded-full bg-foreground/10"></span>
+                      <span class="h-2 w-16 animate-pulse rounded-full bg-foreground/10"></span>
+                    </div>
+                  </div>
+                  <div
+                    v-else-if="
+                      item.kind === 'message' &&
+                      item.message.role === 'model' &&
+                      item.message.streaming
+                    "
+                    class="whitespace-pre-wrap leading-[1.7]"
+                  >
+                    {{ item.message.content }}
+                  </div>
+                  <div v-else-if="item.kind === 'message'" class="ai-markdown">
+                    <AIChatMarkdown
                       custom-id="ai-chat"
-                      :content="item.content"
-                      :max-live-nodes="0"
+                      :content="item.message.content"
                     />
                   </div>
                   <div
                     v-if="
-                      item.is_error &&
+                      item.kind === 'message' &&
+                      item.message.is_error &&
                       (
-                        (item.error_message &&
-                          item.error_message !== item.content) ||
-                        item.conversation_id
+                        (item.message.error_message &&
+                          item.message.error_message !== item.message.content) ||
+                        item.message.conversation_id
                       )
                     "
                     class="mt-3 text-xs leading-6 whitespace-pre-wrap text-destructive/90"
                   >
                     <template
-                      v-if="item.error_message && item.error_message !== item.content"
+                      v-if="
+                        item.kind === 'message' &&
+                        item.message.error_message &&
+                        item.message.error_message !== item.message.content
+                      "
                     >
-                      {{ item.error_message }}
+                      {{ item.message.error_message }}
                     </template>
-                    <div v-if="item.conversation_id" class="mt-1">
-                      对话 ID: {{ item.conversation_id }}
+                    <div
+                      v-if="item.kind === 'message' && item.message.conversation_id"
+                      class="mt-1"
+                    >
+                      对话 ID: {{ item.message.conversation_id }}
                     </div>
                   </div>
                 </div>
 
                 <div
-                  v-if="item.streaming"
-                  class="mt-1.5 inline-flex items-center gap-2 px-1 text-xs text-muted-foreground"
-                >
-                  <span
-                    class="size-2 rounded-full bg-primary animate-[ai-status-pulse_1.4s_ease-out_infinite]"
-                  ></span>
-                  正在生成...
-                </div>
-
-                <div
                   v-if="
-                    !item.streaming &&
+                    item.kind === 'message' &&
+                    !item.message.streaming &&
                     activeConversationId &&
-                    item.message_index !== undefined
+                    item.message.message_index !== undefined
                   "
                   class="ai-message__actions mt-1 flex min-h-[28px] items-center gap-1 px-1"
                   :class="
-                    item.role === 'user' ? 'justify-end' : 'justify-start'
+                    item.message.role === 'user' ? 'justify-end' : 'justify-start'
                   "
                 >
-                  <template v-if="isEditingMessage(item)">
+                  <template v-if="isEditingMessage(item.message)">
                     <button
                       class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
                       :disabled="sending"
@@ -1543,7 +2094,7 @@ onBeforeUnmount(() => {
                       <IconifyIcon class="size-3.5" icon="mdi:content-save-outline" />
                     </button>
                     <button
-                      v-if="item.role === 'user'"
+                      v-if="item.message.role === 'user'"
                       class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
                       :disabled="sending"
                       title="重新发送"
@@ -1554,65 +2105,56 @@ onBeforeUnmount(() => {
                     </button>
                   </template>
                   <button
-                    v-if="item.role === 'user' && !isEditingMessage(item)"
+                    v-if="item.message.role === 'user' && !isEditingMessage(item.message)"
+                    class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
+                    title="复制"
+                    type="button"
+                    @click="copyMessageContent(item.message)"
+                  >
+                    <IconifyIcon class="size-3.5" icon="mdi:content-copy" />
+                  </button>
+                  <button
+                    v-if="item.message.role === 'model' && !isEditingMessage(item.message)"
+                    class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
+                    title="复制"
+                    type="button"
+                    @click="copyMessageContent(item.message)"
+                  >
+                    <IconifyIcon class="size-3.5" icon="mdi:content-copy" />
+                  </button>
+                  <button
+                    v-if="item.message.role === 'user' && !isEditingMessage(item.message)"
                     class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
                     :disabled="sending"
                     title="重新生成"
                     type="button"
-                    @click="regenerateUserMessage(item)"
+                    @click="regenerateUserMessage(item.message)"
                   >
                     <IconifyIcon class="size-3.5" icon="mdi:refresh" />
                   </button>
                   <button
-                    v-if="item.role === 'user' && !isEditingMessage(item)"
+                    v-if="item.message.role === 'user' && !isEditingMessage(item.message)"
                     class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
                     title="编辑重发"
                     type="button"
-                    @click="beginEditMessage(item)"
+                    @click="beginEditMessage(item.message)"
                   >
                     <IconifyIcon class="size-3.5" icon="mdi:pencil-outline" />
                   </button>
                   <button
-                    v-if="item.role === 'user' && !isEditingMessage(item)"
-                    class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
-                    title="复制"
-                    type="button"
-                    @click="copyMessageContent(item)"
-                  >
-                    <IconifyIcon class="size-3.5" icon="mdi:content-copy" />
-                  </button>
-                  <button
-                    v-if="item.role === 'model' && !isEditingMessage(item)"
-                    class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
-                    title="复制"
-                    type="button"
-                    @click="copyMessageContent(item)"
-                  >
-                    <IconifyIcon class="size-3.5" icon="mdi:content-copy" />
-                  </button>
-                  <button
-                    v-if="item.role === 'model' && !isEditingMessage(item)"
-                    class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
-                    title="编辑"
-                    type="button"
-                    @click="beginEditMessage(item)"
-                  >
-                    <IconifyIcon class="size-3.5" icon="mdi:pencil-outline" />
-                  </button>
-                  <button
-                    v-if="item.role === 'model' && !isEditingMessage(item)"
+                    v-if="item.message.role === 'model' && !isEditingMessage(item.message)"
                     class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
                     title="重新生成"
                     type="button"
-                    @click="regenerateMessage(item)"
+                    @click="regenerateMessage(item.message)"
                   >
                     <IconifyIcon class="size-3.5" icon="mdi:refresh" />
                   </button>
                   <a-popconfirm
-                    v-if="!isEditingMessage(item)"
+                    v-if="!isEditingMessage(item.message)"
                     title="删除该消息及其后续历史？"
-                    :description="`第 ${item.message_index + 1} 条消息`"
-                    @confirm="deleteMessageChain(item)"
+                    :description="`第 ${item.message.message_index + 1} 条消息`"
+                    @confirm="deleteMessageChain(item.message)"
                   >
                     <button
                       class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
@@ -1657,7 +2199,7 @@ onBeforeUnmount(() => {
                 <div class="ai-composer__tools">
                   <button
                     class="ai-composer__tool"
-                    :disabled="sending"
+                    :disabled="sending || !canCreateNewConversation"
                     title="新建话题"
                     type="button"
                     @click="createNewConversation"
@@ -1667,62 +2209,6 @@ onBeforeUnmount(() => {
                       icon="mdi:message-plus-outline"
                     />
                   </button>
-
-                  <a-popover
-                    placement="topLeft"
-                    trigger="click"
-                    @open-change="handleProviderModelPopoverOpenChange"
-                  >
-                    <template #content>
-                      <div class="w-[280px] space-y-3">
-                        <div>
-                          <div class="mb-2 text-xs font-medium text-foreground">
-                            供应商
-                          </div>
-                          <a-select
-                            v-model:value="selectedProviderId"
-                            class="w-full"
-                            :disabled="
-                              sending ||
-                              resourcesLoading ||
-                              !!activeConversationId
-                            "
-                            :options="providerOptions"
-                            placeholder="请选择供应商"
-                          />
-                        </div>
-                        <div>
-                          <div class="mb-2 text-xs font-medium text-foreground">
-                            模型
-                          </div>
-                          <a-select
-                            v-model:value="selectedModelId"
-                            class="w-full"
-                            :disabled="
-                              sending ||
-                              resourcesLoading ||
-                              !!activeConversationId ||
-                              modelOptions.length === 0
-                            "
-                            :options="modelOptions"
-                            placeholder="请选择模型"
-                          />
-                        </div>
-                      </div>
-                    </template>
-                    <button
-                      class="ai-composer__tool"
-                      :class="{
-                        'ai-composer__tool--active':
-                          !!selectedProviderId || !!selectedModelId,
-                      }"
-                      :disabled="sending || resourcesLoading"
-                      :title="providerModelLabel"
-                      type="button"
-                    >
-                      <IconifyIcon class="size-4" icon="carbon:model-alt" />
-                    </button>
-                  </a-popover>
 
                   <button
                     class="ai-composer__tool"
@@ -1736,38 +2222,208 @@ onBeforeUnmount(() => {
                     />
                   </button>
 
-                  <button
-                    class="ai-composer__tool"
-                    disabled
-                    title="深度思考（暂未开放）"
-                    type="button"
-                  >
-                    <IconifyIcon
-                      class="size-4"
-                      icon="mdi:head-lightbulb-outline"
-                    />
-                  </button>
+                  <a-popover placement="topLeft" trigger="click">
+                    <template #content>
+                      <div class="w-[320px] space-y-3">
+                        <div class="text-xs font-medium text-foreground">
+                          思考链
+                        </div>
+                        <div class="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
+                          <div class="min-w-0 text-sm font-medium text-foreground">
+                            返回思考链
+                          </div>
+                          <a-switch
+                            v-model:checked="includeThinking"
+                            size="small"
+                          />
+                        </div>
+                        <div class="space-y-2">
+                          <div class="text-xs font-medium text-foreground">
+                            推理强度
+                          </div>
+                          <button
+                            v-for="item in REASONING_EFFORT_OPTIONS"
+                            :key="item.label"
+                            class="flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors"
+                            :class="
+                              reasoningEffort === item.value
+                                ? 'border-primary/35 bg-primary/10'
+                                : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30'
+                            "
+                            type="button"
+                            @click="reasoningEffort = item.value"
+                          >
+                            <span
+                              class="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px]"
+                              :class="
+                                reasoningEffort === item.value
+                                  ? 'border-primary bg-primary text-primary-foreground'
+                                  : 'border-border bg-background text-transparent'
+                              "
+                            >
+                              ✓
+                            </span>
+                            <span class="min-w-0 flex-1">
+                              <span class="block text-xs font-medium text-foreground">
+                                {{ item.label }}
+                              </span>
+                              <span class="mt-1 block text-[11px] text-muted-foreground/75">
+                                {{ item.desc }}
+                              </span>
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                    </template>
+                    <button
+                      class="ai-composer__tool"
+                      :class="{
+                        'ai-composer__tool--active':
+                          includeThinking || !!reasoningEffort,
+                      }"
+                      :disabled="sending"
+                      :title="
+                        includeThinking
+                          ? reasoningEffort
+                            ? `思考链：${reasoningEffort}`
+                            : '已启用思考链'
+                          : '思考链'
+                      "
+                      type="button"
+                    >
+                      <IconifyIcon
+                        class="size-4"
+                        icon="mdi:head-lightbulb-outline"
+                      />
+                    </button>
+                  </a-popover>
 
-                  <button
-                    class="ai-composer__tool"
-                    disabled
-                    title="网络搜索（暂未开放）"
-                    type="button"
-                  >
-                    <IconifyIcon class="size-4" icon="mdi:web" />
-                  </button>
+                  <a-popover placement="topLeft" trigger="click">
+                    <template #content>
+                      <div class="w-[280px] space-y-2">
+                        <div class="text-xs font-medium text-foreground">
+                          网络搜索
+                        </div>
+                        <button
+                          v-for="item in WEB_SEARCH_OPTIONS"
+                          :key="item.value"
+                          class="flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors"
+                          :class="
+                            webSearch === item.value
+                              ? 'border-primary/35 bg-primary/10'
+                              : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30'
+                          "
+                          type="button"
+                          @click="webSearch = item.value"
+                        >
+                          <span
+                            class="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px]"
+                            :class="
+                              webSearch === item.value
+                                ? 'border-primary bg-primary text-primary-foreground'
+                                : 'border-border bg-background text-transparent'
+                            "
+                          >
+                            ✓
+                          </span>
+                          <span class="min-w-0 flex-1">
+                            <span class="block text-xs font-medium text-foreground">
+                              {{ item.label }}
+                            </span>
+                            <span class="mt-1 block text-[11px] text-muted-foreground/75">
+                              {{ item.desc }}
+                            </span>
+                          </span>
+                        </button>
+                      </div>
+                    </template>
+                    <button
+                      class="ai-composer__tool"
+                      :class="{ 'ai-composer__tool--active': webSearch !== 'builtin' }"
+                      :disabled="sending"
+                      :title="
+                        webSearch === 'builtin'
+                          ? '网络搜索'
+                          : `网络搜索：${webSearch}`
+                      "
+                      type="button"
+                    >
+                      <IconifyIcon class="size-4" icon="mdi:web" />
+                    </button>
+                  </a-popover>
 
-                  <button
-                    class="ai-composer__tool"
-                    disabled
-                    title="MCP（暂未开放）"
-                    type="button"
-                  >
-                    <IconifyIcon
-                      class="size-4"
-                      icon="simple-icons:modelcontextprotocol"
-                    />
-                  </button>
+                  <a-popover placement="topLeft" trigger="click">
+                    <template #content>
+                      <div class="w-[320px] space-y-3">
+                        <div class="text-xs font-medium text-foreground">
+                          MCP
+                        </div>
+                        <div
+                          v-if="mcps.length > 0"
+                          class="flex max-h-[220px] flex-col gap-2 overflow-y-auto"
+                        >
+                          <button
+                            v-for="item in mcps"
+                            :key="item.id"
+                            class="flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors"
+                            :class="
+                              isMcpSelected(item.id)
+                                ? 'border-primary/35 bg-primary/10'
+                                : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30'
+                            "
+                            :title="item.description || item.name"
+                            type="button"
+                            @click="toggleMcpSelection(item.id)"
+                          >
+                            <span
+                              class="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px]"
+                              :class="
+                                isMcpSelected(item.id)
+                                  ? 'border-primary bg-primary text-primary-foreground'
+                                  : 'border-border bg-background text-transparent'
+                              "
+                            >
+                              ✓
+                            </span>
+                            <span class="min-w-0 flex-1">
+                              <span class="block text-xs font-medium text-foreground">
+                                {{ item.name }}
+                              </span>
+                              <span
+                                class="mt-1 block truncate text-[11px] text-muted-foreground/75"
+                              >
+                                {{
+                                  item.description ||
+                                  item.command ||
+                                  item.url ||
+                                  `MCP #${item.id}`
+                                }}
+                              </span>
+                            </span>
+                          </button>
+                        </div>
+                        <a-empty v-else :image="null" description="暂无可用 MCP" />
+                      </div>
+                    </template>
+                    <button
+                      class="ai-composer__tool"
+                      :class="{
+                        'ai-composer__tool--active': selectedMcpIds.length > 0,
+                      }"
+                      :disabled="sending"
+                      :title="
+                        selectedMcpIds.length > 0
+                          ? `已选择 ${selectedMcpIds.length} 个 MCP`
+                          : '选择 MCP'
+                      "
+                      type="button"
+                    >
+                      <IconifyIcon
+                        class="size-4"
+                        icon="simple-icons:modelcontextprotocol"
+                      />
+                    </button>
+                  </a-popover>
 
                   <a-popover
                     :align="{ overflow: { adjustX: false, adjustY: true } }"
@@ -1778,18 +2434,8 @@ onBeforeUnmount(() => {
                   >
                     <template #content>
                       <div class="w-[320px]">
-                        <div
-                          class="mb-2 flex items-center justify-between gap-3"
-                        >
-                          <div class="text-xs font-medium text-foreground">
-                            快捷短语
-                          </div>
-                          <RouterLink
-                            class="text-xs text-muted-foreground transition-colors hover:text-foreground"
-                            to="/plugins/ai/quick-phrase"
-                          >
-                            管理
-                          </RouterLink>
+                        <div class="mb-2 text-xs font-medium text-foreground">
+                          快捷短语
                         </div>
                         <a-spin v-if="quickPhraseLoading" size="small" />
                         <div
@@ -1907,13 +2553,17 @@ onBeforeUnmount(() => {
           </VbenButton>
         </div>
 
-        <section class="ai-settings-section">
-          <div class="ai-settings-section__title">基础参数</div>
-          <div class="ai-settings-grid">
-            <div class="ai-setting-field">
-              <div class="ai-setting-field__head">
-                <span class="ai-setting-field__label">Temperature</span>
-                <span class="ai-setting-field__hint">0 - 2</span>
+        <section class="rounded-2xl border border-border bg-background/80 p-4 md:p-5">
+          <div class="mb-4 text-sm font-semibold text-foreground">生成控制</div>
+          <div class="grid gap-4 md:grid-cols-2">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Temperature</span>
+                  <a-tooltip placement="right" title="控制回答的发散程度，越低越稳定，越高越灵活。取值范围 0 到 2。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
               </div>
               <a-input-number
                 v-model:value="temperature"
@@ -1923,21 +2573,14 @@ onBeforeUnmount(() => {
                 :step="0.1"
               />
             </div>
-            <div class="ai-setting-field">
-              <div class="ai-setting-field__head">
-                <span class="ai-setting-field__label">Max Tokens</span>
-                <span class="ai-setting-field__hint">可选</span>
-              </div>
-              <a-input-number
-                v-model:value="maxTokens"
-                class="w-full"
-                :min="1"
-              />
-            </div>
-            <div class="ai-setting-field">
-              <div class="ai-setting-field__head">
-                <span class="ai-setting-field__label">Top P</span>
-                <span class="ai-setting-field__hint">0 - 1</span>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Top P</span>
+                  <a-tooltip placement="right" title="控制候选词范围，通常与 Temperature 二选一微调即可。取值范围 0 到 1。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
               </div>
               <a-input-number
                 v-model:value="topP"
@@ -1947,10 +2590,29 @@ onBeforeUnmount(() => {
                 :step="0.1"
               />
             </div>
-            <div class="ai-setting-field">
-              <div class="ai-setting-field__head">
-                <span class="ai-setting-field__label">Timeout</span>
-                <span class="ai-setting-field__hint">秒</span>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Max Tokens</span>
+                  <a-tooltip placement="right" title="限制单次回答长度，可选；不填时由模型自行决定。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
+              </div>
+              <a-input-number
+                v-model:value="maxTokens"
+                class="w-full"
+                :min="1"
+              />
+            </div>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Timeout</span>
+                  <a-tooltip placement="right" title="超过这个时间还没返回结果时，请求会被视为超时，单位为秒。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
               </div>
               <a-input-number
                 v-model:value="timeout"
@@ -1962,20 +2624,28 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section class="ai-settings-section">
-          <div class="ai-settings-section__title">高级参数</div>
-          <div class="ai-settings-grid">
-            <div class="ai-setting-field">
-              <div class="ai-setting-field__head">
-                <span class="ai-setting-field__label">Seed</span>
-                <span class="ai-setting-field__hint">可选</span>
+        <section class="rounded-2xl border border-border bg-background/80 p-4 md:p-5">
+          <div class="mb-4 text-sm font-semibold text-foreground">行为控制</div>
+          <div class="grid gap-4 md:grid-cols-2">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Seed</span>
+                  <a-tooltip placement="right" title="固定随机种子后，更容易复现相似结果；该项可选。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
               </div>
               <a-input-number v-model:value="seed" class="w-full" />
             </div>
-            <div class="ai-setting-field">
-              <div class="ai-setting-field__head">
-                <span class="ai-setting-field__label">Presence Penalty</span>
-                <span class="ai-setting-field__hint">-2 - 2</span>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Presence Penalty</span>
+                  <a-tooltip placement="right" title="提高后更鼓励模型引入新内容，减少重复话题。取值范围 -2 到 2。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
               </div>
               <a-input-number
                 v-model:value="presencePenalty"
@@ -1985,10 +2655,14 @@ onBeforeUnmount(() => {
                 :step="0.1"
               />
             </div>
-            <div class="ai-setting-field">
-              <div class="ai-setting-field__head">
-                <span class="ai-setting-field__label">Frequency Penalty</span>
-                <span class="ai-setting-field__hint">-2 - 2</span>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Frequency Penalty</span>
+                  <a-tooltip placement="right" title="提高后更少重复相同措辞，适合压制啰嗦输出。取值范围 -2 到 2。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
               </div>
               <a-input-number
                 v-model:value="frequencyPenalty"
@@ -1999,10 +2673,21 @@ onBeforeUnmount(() => {
               />
             </div>
             <div class="md:col-span-2">
-              <div class="ai-setting-switch">
+              <div class="flex items-center justify-between gap-4 rounded-xl border border-border bg-card/70 px-4 py-3">
                 <div class="min-w-0">
-                  <div class="ai-setting-field__label">并行工具调用</div>
-                  <div class="ai-setting-switch__desc">
+                  <div class="text-sm font-medium text-foreground">启用内置工具</div>
+                  <div class="mt-1 text-xs text-muted-foreground">
+                    允许模型调用系统内置工具
+                  </div>
+                </div>
+                <a-switch v-model:checked="enableBuiltinTools" size="small" />
+              </div>
+            </div>
+            <div class="md:col-span-2">
+              <div class="flex items-center justify-between gap-4 rounded-xl border border-border bg-card/70 px-4 py-3">
+                <div class="min-w-0">
+                  <div class="text-sm font-medium text-foreground">并行工具调用</div>
+                  <div class="mt-1 text-xs text-muted-foreground">
                     允许模型同时发起多个工具调用
                   </div>
                 </div>
@@ -2012,13 +2697,86 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section class="ai-settings-section">
-          <div class="ai-settings-section__title">扩展参数</div>
-          <div class="ai-settings-stack">
-            <div class="ai-setting-field">
-              <div class="ai-setting-field__head">
-                <span class="ai-setting-field__label">停止序列</span>
-                <span class="ai-setting-field__hint">JSON 数组</span>
+        <section class="rounded-2xl border border-border bg-background/80 p-4 md:p-5">
+          <div class="mb-4 text-sm font-semibold text-foreground">结构化输出</div>
+          <div class="grid gap-4">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Output Mode</span>
+                  <a-tooltip placement="right" title="选择返回内容的输出方式。可选 text、tool、native、prompted，默认 text 最通用。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
+              </div>
+              <a-select
+                v-model:value="outputMode"
+                class="w-full"
+                :options="[
+                  { label: 'text', value: 'text' },
+                  { label: 'tool', value: 'tool' },
+                  { label: 'native', value: 'native' },
+                  { label: 'prompted', value: 'prompted' },
+                ]"
+              />
+            </div>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Output Schema Name</span>
+                  <a-tooltip placement="right" title="给结构化输出起一个名字，便于区分不同格式；该项可选。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
+              </div>
+              <a-input
+                v-model:value="outputSchemaName"
+                placeholder="结构化输出名称"
+              />
+            </div>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Output Schema Description</span>
+                  <a-tooltip placement="right" title="简要说明这份结构化输出想表达什么；该项可选。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
+              </div>
+              <a-input
+                v-model:value="outputSchemaDescription"
+                placeholder="结构化输出说明"
+              />
+            </div>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Output Schema</span>
+                  <a-tooltip placement="right" title="需要结构化返回时填写 JSON Schema，不需要可留空。这里填写的是 JSON Schema 对象。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
+              </div>
+              <a-textarea
+                v-model:value="outputSchema"
+                :auto-size="{ minRows: 3, maxRows: 8 }"
+                placeholder="{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{&quot;answer&quot;:{&quot;type&quot;:&quot;string&quot;}}}"
+              />
+            </div>
+          </div>
+        </section>
+
+        <section class="rounded-2xl border border-border bg-background/80 p-4 md:p-5">
+          <div class="mb-4 text-sm font-semibold text-foreground">请求透传</div>
+          <div class="grid gap-4">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">停止序列</span>
+                  <a-tooltip placement="right" title="当生成到这些内容时立即停止，适合截断特定格式。这里填写的是 JSON 数组。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
               </div>
               <a-textarea
                 v-model:value="stopSequences"
@@ -2026,10 +2784,14 @@ onBeforeUnmount(() => {
                 :placeholder="STOP_SEQUENCES_PLACEHOLDER"
               />
             </div>
-            <div class="ai-setting-field">
-              <div class="ai-setting-field__head">
-                <span class="ai-setting-field__label">Extra Headers</span>
-                <span class="ai-setting-field__hint">JSON 对象</span>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Extra Headers</span>
+                  <a-tooltip placement="right" title="额外附加到模型请求中的请求头，通常用于特殊网关。这里填写的是 JSON 对象。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
               </div>
               <a-textarea
                 v-model:value="extraHeaders"
@@ -2037,10 +2799,14 @@ onBeforeUnmount(() => {
                 :placeholder="EXTRA_HEADERS_PLACEHOLDER"
               />
             </div>
-            <div class="ai-setting-field">
-              <div class="ai-setting-field__head">
-                <span class="ai-setting-field__label">Extra Body</span>
-                <span class="ai-setting-field__hint">JSON</span>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Extra Body</span>
+                  <a-tooltip placement="right" title="透传额外请求体字段，适合补充模型专属参数。这里填写的是 JSON 内容。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
               </div>
               <a-textarea
                 v-model:value="extraBody"
@@ -2048,10 +2814,14 @@ onBeforeUnmount(() => {
                 :placeholder="EXTRA_BODY_PLACEHOLDER"
               />
             </div>
-            <div class="ai-setting-field">
-              <div class="ai-setting-field__head">
-                <span class="ai-setting-field__label">Logit Bias</span>
-                <span class="ai-setting-field__hint">JSON 对象</span>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between gap-3">
+                <span class="inline-flex min-w-0 items-center gap-1.5">
+                  <span class="text-sm font-medium text-foreground">Logit Bias</span>
+                  <a-tooltip placement="right" title="用来提高或压低特定 token 的出现概率，适合高级控制。这里填写的是 JSON 对象。">
+                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  </a-tooltip>
+                </span>
               </div>
               <a-textarea
                 v-model:value="logitBias"
@@ -2067,72 +2837,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.ai-settings-section {
-  padding: 16px;
-  background: hsl(var(--background));
-  border: 1px solid hsl(var(--border));
-  border-radius: calc(var(--radius) + 2px);
-}
-
-.ai-settings-section__title {
-  margin-bottom: 14px;
-  font-size: 13px;
-  font-weight: 600;
-  color: hsl(var(--foreground));
-}
-
-.ai-settings-grid {
-  display: grid;
-  gap: 12px;
-}
-
-.ai-settings-stack {
-  display: grid;
-  gap: 12px;
-}
-
-.ai-setting-field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.ai-setting-field__head {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.ai-setting-field__label {
-  font-size: 13px;
-  font-weight: 500;
-  color: hsl(var(--foreground));
-}
-
-.ai-setting-field__hint {
-  flex-shrink: 0;
-  font-size: 12px;
-  color: hsl(var(--muted-foreground));
-}
-
-.ai-setting-switch {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  background: hsl(var(--background));
-  border: 1px solid hsl(var(--border));
-  border-radius: calc(var(--radius) - 2px);
-}
-
-.ai-setting-switch__desc {
-  margin-top: 4px;
-  font-size: 12px;
-  color: hsl(var(--muted-foreground));
-}
-
 .ai-markdown :deep(*) {
   color: inherit;
 }
@@ -2327,6 +3031,47 @@ onBeforeUnmount(() => {
   transform: translateY(0);
 }
 
+.ai-thinking-panel {
+  border: 1px solid rgb(245 158 11 / 0.2);
+  background:
+    linear-gradient(180deg, rgb(245 158 11 / 0.08), rgb(245 158 11 / 0.03)),
+    hsl(var(--background));
+  border-radius: 12px;
+}
+
+.ai-thinking-panel--open {
+  background:
+    linear-gradient(180deg, rgb(245 158 11 / 0.12), rgb(245 158 11 / 0.04)),
+    hsl(var(--background));
+}
+
+.ai-thinking-panel__toggle {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  color: rgb(180 83 9);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: left;
+  transition: background-color 0.18s ease;
+}
+
+.ai-thinking-panel__toggle:hover {
+  background: rgb(245 158 11 / 0.06);
+}
+
+.ai-thinking-panel__content {
+  border-top: 1px solid rgb(245 158 11 / 0.14);
+  padding: 12px;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+}
+
 .ai-composer__meta {
   display: flex;
   flex-wrap: wrap;
@@ -2372,12 +3117,6 @@ onBeforeUnmount(() => {
 
   100% {
     box-shadow: 0 0 0 0 hsl(var(--primary) / 0%);
-  }
-}
-
-@media (min-width: 768px) {
-  .ai-settings-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
