@@ -91,15 +91,6 @@ type AIChatCompletionsSSE =
       };
     };
 
-export const COMPOSER_MIN_HEIGHT = 56;
-export const COMPOSER_DEFAULT_HEIGHT = 56;
-export const COMPOSER_FALLBACK_MAX_HEIGHT = 420;
-export const MIN_MESSAGE_VIEWPORT_HEIGHT = 180;
-export const STOP_SEQUENCES_PLACEHOLDER = '["</thinking>"]';
-export const EXTRA_HEADERS_PLACEHOLDER = '{"x-trace-id":"chat-demo"}';
-export const EXTRA_BODY_PLACEHOLDER = '{"reasoning":{"effort":"medium"}}';
-export const LOGIT_BIAS_PLACEHOLDER = '{"198":-100}';
-
 export function buildMessageId(seedValue?: null | number | string) {
   return `${seedValue ?? Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }

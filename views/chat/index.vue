@@ -1,4 +1,12 @@
 <script setup lang="ts">
+import type {
+  ActionsProps,
+  BubbleProps,
+  ConversationsProps,
+  PromptsClickInfo,
+  PromptsProps,
+  SenderProps,
+} from '@antdv-next/x';
 import type { MenuItemType } from 'antdv-next';
 
 import type { ChatMessageItem } from './data';
@@ -16,6 +24,7 @@ import type {
 
 import {
   computed,
+  defineComponent,
   h,
   nextTick,
   onBeforeUnmount,
@@ -24,12 +33,7 @@ import {
   watch,
 } from 'vue';
 
-import {
-  confirm,
-  Page,
-  useVbenModal,
-  VbenButton,
-} from '@vben/common-ui';
+import { confirm, Page, useVbenModal, VbenButton } from '@vben/common-ui';
 import {
   IconifyIcon,
   MaterialSymbolsDelete,
@@ -37,9 +41,31 @@ import {
   Pin,
   PinOff,
 } from '@vben/icons';
+import { usePreferences } from '@vben/preferences';
 
+import {
+  Actions,
+  Bubble,
+  CodeHighlighter,
+  Conversations,
+  Mermaid,
+  Prompts,
+  Sender,
+  Think,
+  Welcome,
+} from '@antdv-next/x';
+import { XMarkdown } from '@antdv-next/x-markdown';
 import { useClipboard } from '@vueuse/core';
-import { message } from 'antdv-next';
+import {
+  Avatar as AAvatar,
+  Button as AButton,
+  Empty as AEmpty,
+  Flex as AFlex,
+  Spin as ASpin,
+  Switch as ASwitch,
+  message,
+  Popover,
+} from 'antdv-next';
 
 import {
   clearAIChatConversationMessagesApi,
@@ -59,23 +85,14 @@ import {
 
 import {
   buildMessageId,
-  COMPOSER_DEFAULT_HEIGHT,
-  COMPOSER_FALLBACK_MAX_HEIGHT,
-  COMPOSER_MIN_HEIGHT,
-  EXTRA_BODY_PLACEHOLDER,
-  EXTRA_HEADERS_PLACEHOLDER,
-  LOGIT_BIAS_PLACEHOLDER,
+  consumeBufferedSSEMessages,
   makeConversationTitle,
   mergeModelContent,
-  MIN_MESSAGE_VIEWPORT_HEIGHT,
   normalizeMessage,
   parseDateLabel,
   parseJsonField,
   resolveChatMessageContent,
-  STOP_SEQUENCES_PLACEHOLDER,
 } from './data';
-import AIChatMarkdown from './components/chat-markdown.vue';
-import { createAIChatStreamAdapter } from './x-chat-adapter';
 
 type ThinkingPanelState = {
   autoOpened: boolean;
@@ -102,6 +119,7 @@ type DisplayChatMessageItem =
     };
 
 const { copy } = useClipboard({ legacy: true });
+const { isDark } = usePreferences();
 const prompt = ref('');
 const streamError = ref('');
 const draftConversationTitle = ref('新话题');
@@ -109,7 +127,7 @@ const selectedProviderId = ref<number>();
 const selectedModelId = ref<string>();
 const activeConversationId = ref<string>();
 const editingMessage = ref<ChatMessageItem>();
-const editingMessageDraft = ref('');
+const editingMessageIntent = ref<'resend' | 'save'>('save');
 const regeneratingMessageIndex = ref<number>();
 const isRenamingConversation = ref(false);
 const renameTitle = ref('');
@@ -154,11 +172,6 @@ const stopSequences = ref('');
 const extraHeaders = ref('');
 const extraBody = ref('');
 const logitBias = ref('');
-const composerHeight = ref(56);
-const isComposerResizing = ref(false);
-const isComposerExpanded = ref(false);
-const composerExpandedBackupHeight = ref(56);
-const messageViewportHeight = ref(0);
 const quickPhrasePopoverOpen = ref(false);
 const thinkingPanelStates = ref<Record<string, ThinkingPanelState>>({});
 
@@ -231,9 +244,6 @@ let currentConversationFetchId = 0;
 let currentStreamId = 0;
 let currentQuickPhrasePopoverRequestId = 0;
 let abortController: AbortController | undefined;
-let composerResizeStartY = 0;
-let composerResizeStartHeight = COMPOSER_MIN_HEIGHT;
-let composerLayoutObserver: ResizeObserver | undefined;
 
 function upsertConversation(summary: AIChatConversationItem) {
   const index = conversations.value.findIndex(
@@ -287,7 +297,9 @@ function getThinkingPanelKey(item: DisplayChatMessageItem) {
 }
 
 function isThinkingExpanded(item: DisplayChatMessageItem) {
-  return Boolean(thinkingPanelStates.value[getThinkingPanelKey(item)]?.expanded);
+  return Boolean(
+    thinkingPanelStates.value[getThinkingPanelKey(item)]?.expanded,
+  );
 }
 
 function toggleThinkingPanel(item: DisplayChatMessageItem) {
@@ -486,7 +498,8 @@ function applyStreamMessage(data: AIChatMessage) {
       existingMessage.error_message =
         data.error_message ?? existingMessage.error_message;
       existingMessage.is_error = data.is_error ?? existingMessage.is_error;
-      existingMessage.message_id = data.message_id ?? existingMessage.message_id;
+      existingMessage.message_id =
+        data.message_id ?? existingMessage.message_id;
       existingMessage.message_index =
         data.message_index ?? existingMessage.message_index;
       existingMessage.structured_data =
@@ -511,7 +524,8 @@ function applyStreamMessage(data: AIChatMessage) {
       );
       lastMessage.conversation_id =
         data.conversation_id ?? lastMessage.conversation_id;
-      lastMessage.error_message = data.error_message ?? lastMessage.error_message;
+      lastMessage.error_message =
+        data.error_message ?? lastMessage.error_message;
       lastMessage.is_error = data.is_error ?? lastMessage.is_error;
       lastMessage.message_id = data.message_id ?? lastMessage.message_id;
       lastMessage.message_index =
@@ -616,8 +630,7 @@ async function fetchModelsByProvider(providerId?: number) {
 async function fetchQuickPhrases() {
   quickPhraseLoading.value = true;
   try {
-    const data = await getAllAIQuickPhraseApi();
-    quickPhrases.value = data;
+    quickPhrases.value = await getAllAIQuickPhraseApi();
   } finally {
     quickPhraseLoading.value = false;
   }
@@ -719,7 +732,10 @@ function appendQuickPhrase(item: AIQuickPhraseResult) {
     : item.content;
 }
 
-function beginEditMessage(item: ChatMessageItem) {
+function beginEditMessage(
+  item: ChatMessageItem,
+  intent: 'resend' | 'save' = 'save',
+) {
   if (
     item.role !== 'user' ||
     item.message_id === undefined ||
@@ -729,13 +745,13 @@ function beginEditMessage(item: ChatMessageItem) {
   }
 
   editingMessage.value = item;
-  editingMessageDraft.value = item.content;
+  editingMessageIntent.value = intent;
   regeneratingMessageIndex.value = undefined;
 }
 
 function cancelEditMessage() {
   editingMessage.value = undefined;
-  editingMessageDraft.value = '';
+  editingMessageIntent.value = 'save';
 }
 
 function isEditingMessage(item: ChatMessageItem) {
@@ -753,8 +769,8 @@ function updateMessageContent(target: ChatMessageItem, content: string) {
   );
 }
 
-async function saveEditedMessage() {
-  const trimmedContent = editingMessageDraft.value.trim();
+async function saveEditedMessage(content: string) {
+  const trimmedContent = content.trim();
   const targetMessage = editingMessage.value;
 
   if (
@@ -771,17 +787,21 @@ async function saveEditedMessage() {
     return;
   }
 
-  await updateAIChatMessageApi(targetMessage.conversation_id, targetMessage.message_id, {
-    content: trimmedContent,
-  });
+  await updateAIChatMessageApi(
+    targetMessage.conversation_id,
+    targetMessage.message_id,
+    {
+      content: trimmedContent,
+    },
+  );
   updateMessageContent(targetMessage, trimmedContent);
   cancelEditMessage();
   await loadConversationDetail(targetMessage.conversation_id);
   message.success('消息内容已保存');
 }
 
-async function resendEditedMessage() {
-  const trimmedContent = editingMessageDraft.value.trim();
+async function resendEditedMessage(content: string) {
+  const trimmedContent = content.trim();
   const targetMessage = editingMessage.value;
 
   if (
@@ -798,14 +818,19 @@ async function resendEditedMessage() {
   }
 
   updateMessageContent(targetMessage, trimmedContent);
-  editingMessage.value = {
+  const nextEditingMessage: ChatMessageItem = {
     ...targetMessage,
     content: trimmedContent,
   };
+  editingMessage.value = nextEditingMessage;
   if (targetMessage.conversation_id) {
-    await updateAIChatMessageApi(targetMessage.conversation_id, targetMessage.message_id, {
-      content: trimmedContent,
-    });
+    await updateAIChatMessageApi(
+      targetMessage.conversation_id,
+      targetMessage.message_id,
+      {
+        content: trimmedContent,
+      },
+    );
   }
   await submitChat(undefined, true, trimmedContent);
 }
@@ -820,7 +845,7 @@ async function regenerateUserMessage(item: ChatMessageItem) {
   }
 
   editingMessage.value = item;
-  editingMessageDraft.value = item.content;
+  editingMessageIntent.value = 'resend';
   regeneratingMessageIndex.value = undefined;
   await submitChat(undefined, true, item.content);
 }
@@ -1067,11 +1092,11 @@ async function submitChat(
     return;
   }
   const chatMode: AIChatParams['mode'] =
-    regenerateMessageId != null
-      ? 'regenerate'
-      : editingMessageId != null
-        ? 'edit'
-        : 'create';
+    regenerateMessageId == null
+      ? editingMessageId == null
+        ? 'create'
+        : 'edit'
+      : 'regenerate';
   const submittedTitle =
     activeConversationId.value || !promptText
       ? draftConversationTitle.value
@@ -1097,7 +1122,8 @@ async function submitChat(
           value !== null && typeof value === 'object' && !Array.isArray(value),
       ),
       max_tokens: maxTokens.value,
-      mcp_ids: selectedMcpIds.value.length > 0 ? selectedMcpIds.value : undefined,
+      mcp_ids:
+        selectedMcpIds.value.length > 0 ? selectedMcpIds.value : undefined,
       model_id: selectedModelId.value,
       output_mode: outputMode.value,
       output_schema: parseJsonField<Record<string, unknown>>(
@@ -1106,7 +1132,8 @@ async function submitChat(
         (value) =>
           value !== null && typeof value === 'object' && !Array.isArray(value),
       ),
-      output_schema_description: outputSchemaDescription.value.trim() || undefined,
+      output_schema_description:
+        outputSchemaDescription.value.trim() || undefined,
       output_schema_name: outputSchemaName.value.trim() || undefined,
       parallel_tool_calls: parallelToolCalls.value,
       presence_penalty: presencePenalty.value,
@@ -1159,20 +1186,23 @@ async function submitChat(
   if (regenerateMessageId === undefined) {
     prompt.value = '';
   }
-  if (regenerateMessageId === undefined && editingMessageId == null && promptText) {
+  if (
+    regenerateMessageId === undefined &&
+    editingMessageId == null &&
+    promptText
+  ) {
     insertOptimisticUserMessage(promptText);
   }
   insertStreamingModelSkeleton();
 
   let streamedConversationId = activeConversationId.value;
-  const streamAdapter = createAIChatStreamAdapter({
-    onMessage: (data) => {
-      if (data.conversation_id) {
-        streamedConversationId = data.conversation_id;
-      }
-      applyStreamMessage(data);
-    },
-  });
+  let streamBuffer = '';
+  const handleStreamMessage = (data: AIChatMessage) => {
+    if (data.conversation_id) {
+      streamedConversationId = data.conversation_id;
+    }
+    applyStreamMessage(data);
+  };
 
   try {
     await streamAIChatApi(payload, {
@@ -1182,10 +1212,16 @@ async function submitChat(
           return;
         }
 
-        streamAdapter.consumeChunk(chunk);
+        streamBuffer = consumeBufferedSSEMessages(
+          `${streamBuffer}${chunk}`,
+          handleStreamMessage,
+        );
       },
     });
-    await streamAdapter.flush();
+    streamBuffer = consumeBufferedSSEMessages(
+      `${streamBuffer}\n\n`,
+      handleStreamMessage,
+    );
 
     finalizeStreamingMessages();
     await fetchConversations(false);
@@ -1195,9 +1231,7 @@ async function submitChat(
       await loadConversationDetail(streamedConversationId);
     } else if (conversations.value[0]) {
       activeConversationId.value = conversations.value[0].conversation_id;
-      await loadConversationDetail(
-        conversations.value[0].conversation_id,
-      );
+      await loadConversationDetail(conversations.value[0].conversation_id);
     }
   } catch (error) {
     if ((error as Error).name !== 'AbortError') {
@@ -1221,127 +1255,14 @@ async function submitChat(
       await loadConversationDetail(streamedConversationId);
     }
   } finally {
-    await streamAdapter.cancel();
     if (streamId === currentStreamId) {
       abortController = undefined;
       sending.value = false;
       editingMessage.value = undefined;
-      editingMessageDraft.value = '';
+      editingMessageIntent.value = 'save';
       regeneratingMessageIndex.value = undefined;
     }
   }
-}
-
-function handlePromptKeydown(event: KeyboardEvent) {
-  if (event.isComposing) {
-    return;
-  }
-
-  if (event.key === 'Enter' && !event.shiftKey) {
-    event.preventDefault();
-    submitChat(undefined, true);
-  }
-}
-
-function getComposerMaxHeight() {
-  const messageHeight =
-    messageViewportHeight.value || messageContainerRef.value?.clientHeight || 0;
-
-  if (!messageHeight) {
-    return COMPOSER_FALLBACK_MAX_HEIGHT;
-  }
-
-  const expandableHeight = Math.max(
-    0,
-    messageHeight - MIN_MESSAGE_VIEWPORT_HEIGHT,
-  );
-
-  return Math.max(COMPOSER_MIN_HEIGHT, composerHeight.value + expandableHeight);
-}
-
-function setComposerHeight(nextHeight: number) {
-  composerHeight.value = Math.min(
-    getComposerMaxHeight(),
-    Math.max(COMPOSER_MIN_HEIGHT, nextHeight),
-  );
-}
-
-function syncComposerLayout() {
-  messageViewportHeight.value = messageContainerRef.value?.clientHeight || 0;
-
-  const nextHeight = Math.min(composerHeight.value, getComposerMaxHeight());
-  if (nextHeight !== composerHeight.value) {
-    composerHeight.value = nextHeight;
-  }
-}
-
-function setupComposerLayoutObserver() {
-  syncComposerLayout();
-
-  if (typeof ResizeObserver === 'undefined' || !messageContainerRef.value) {
-    window.addEventListener('resize', syncComposerLayout);
-    return;
-  }
-
-  composerLayoutObserver = new ResizeObserver(() => {
-    syncComposerLayout();
-  });
-  composerLayoutObserver.observe(messageContainerRef.value);
-  window.addEventListener('resize', syncComposerLayout);
-}
-
-function teardownComposerLayoutObserver() {
-  composerLayoutObserver?.disconnect();
-  composerLayoutObserver = undefined;
-  window.removeEventListener('resize', syncComposerLayout);
-}
-
-function handleComposerResizeMove(event: MouseEvent) {
-  if (!isComposerResizing.value) {
-    return;
-  }
-
-  const nextHeight =
-    composerResizeStartHeight - (event.clientY - composerResizeStartY);
-
-  setComposerHeight(nextHeight);
-  isComposerExpanded.value = false;
-}
-
-function stopComposerResize() {
-  if (!isComposerResizing.value) {
-    return;
-  }
-
-  isComposerResizing.value = false;
-  document.body.style.userSelect = '';
-  document.documentElement.style.cursor = '';
-  window.removeEventListener('mousemove', handleComposerResizeMove);
-  window.removeEventListener('mouseup', stopComposerResize);
-}
-
-function startComposerResize(event: MouseEvent) {
-  event.preventDefault();
-  event.stopPropagation();
-  composerResizeStartY = event.clientY;
-  composerResizeStartHeight = composerHeight.value;
-  isComposerResizing.value = true;
-  document.body.style.userSelect = 'none';
-  document.documentElement.style.cursor = 'ns-resize';
-  window.addEventListener('mousemove', handleComposerResizeMove);
-  window.addEventListener('mouseup', stopComposerResize);
-}
-
-function toggleComposerExpanded() {
-  if (isComposerExpanded.value) {
-    setComposerHeight(composerExpandedBackupHeight.value);
-    isComposerExpanded.value = false;
-    return;
-  }
-
-  composerExpandedBackupHeight.value = composerHeight.value;
-  setComposerHeight(getComposerMaxHeight());
-  isComposerExpanded.value = true;
 }
 
 const activeConversation = computed(() => {
@@ -1353,13 +1274,13 @@ const activeConversation = computed(() => {
 const displayMessages = computed<DisplayChatMessageItem[]>(() => {
   const items: DisplayChatMessageItem[] = [];
   let pendingThinking:
+    | undefined
     | {
         content: string;
         sourceId: string;
         streaming: boolean;
         timestamp?: string;
-      }
-    | undefined;
+      };
 
   const flushPendingThinking = () => {
     if (!pendingThinking) {
@@ -1497,7 +1418,9 @@ const activeConversationSubtitle = computed(() => {
     return '发送首条消息后自动创建会话';
   }
 
-  const labels = [`创建于 ${parseDateLabel(activeConversation.value.created_time)}`];
+  const labels = [
+    `创建于 ${parseDateLabel(activeConversation.value.created_time)}`,
+  ];
   if (activeConversation.value.is_pinned) {
     labels.unshift('已置顶');
   }
@@ -1554,7 +1477,7 @@ const canClearMessages = computed(() => {
 });
 
 const canCreateNewConversation = computed(() => {
-  return prompt.value.trim().length > 0;
+  return activeMessages.value.length > 0;
 });
 
 const composerHint = computed(() => {
@@ -1566,6 +1489,766 @@ const composerHint = computed(() => {
   }
   return '';
 });
+
+const webSearchButtonLabel = computed(() => {
+  const activeOption = WEB_SEARCH_OPTIONS.find(
+    (item) => item.value === webSearch.value,
+  );
+
+  return activeOption?.label || '联网搜索';
+});
+
+const senderAutoSize: NonNullable<SenderProps['autoSize']> = {
+  maxRows: 6,
+  minRows: 2,
+};
+
+function renderCodeBlock(content: string, language = 'text') {
+  return h(CodeHighlighter, {
+    content,
+    language,
+    showThemeToggle: false,
+    theme: isDark.value ? 'dark' : 'light',
+  });
+}
+
+function renderMermaidBlock(content: string) {
+  return h(Mermaid, {
+    codeHighlighterProps: {
+      showThemeToggle: false,
+      theme: isDark.value ? 'dark' : 'light',
+    },
+    content,
+  });
+}
+
+function extractMarkdownSlotText(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => extractMarkdownSlotText(item)).join('');
+  }
+
+  if (value && typeof value === 'object' && 'children' in value) {
+    return extractMarkdownSlotText((value as { children?: unknown }).children);
+  }
+
+  return '';
+}
+
+const MarkdownContent = defineComponent({
+  name: 'ChatMarkdownContent',
+  props: {
+    content: {
+      default: '',
+      type: String,
+    },
+    streaming: {
+      default: false,
+      type: Boolean,
+    },
+  },
+  setup(props) {
+    const MarkdownPre = defineComponent({
+      name: 'ChatMarkdownPre',
+      setup(_, { slots }) {
+        return () => slots.default?.() || null;
+      },
+    });
+
+    const MarkdownCode = defineComponent({
+      name: 'ChatMarkdownCode',
+      inheritAttrs: false,
+      setup(_, { attrs, slots }) {
+        return () => {
+          const content = extractMarkdownSlotText(slots.default?.());
+          const language = String(attrs['data-lang'] ?? 'text').toLowerCase();
+          const isBlock = attrs['data-block'] === 'true';
+
+          if (!isBlock) {
+            return h(
+              'code',
+              {
+                class:
+                  'rounded bg-muted px-1.5 py-0.5 font-mono text-[0.92em] text-foreground',
+              },
+              slots.default?.(),
+            );
+          }
+
+          if (language === 'mermaid') {
+            return renderMermaidBlock(content);
+          }
+
+          return renderCodeBlock(content, language);
+        };
+      },
+    });
+
+    return () =>
+      h(XMarkdown, {
+        className: isDark.value ? 'x-markdown-dark' : 'x-markdown-light',
+        components: {
+          code: MarkdownCode,
+          pre: MarkdownPre,
+        },
+        config: {
+          breaks: true,
+          gfm: true,
+        },
+        content: props.content,
+        openLinksInNewTab: true,
+        streaming: props.streaming
+          ? {
+              hasNextChunk: true,
+            }
+          : undefined,
+      });
+  },
+});
+
+function renderConversationLabel(conversation: AIChatConversationItem) {
+  return h('div', { class: 'min-w-0 pr-8' }, [
+    h('div', { class: 'flex min-w-0 items-center gap-1.5' }, [
+      h(
+        'span',
+        {
+          class: 'min-w-0 flex-1 truncate text-[13px] font-medium leading-5',
+          title: conversation.title,
+        },
+        conversation.title,
+      ),
+      conversation.is_pinned
+        ? h(Pin, {
+            class: 'size-3.5 shrink-0 text-muted-foreground',
+          })
+        : null,
+    ]),
+    h('div', { class: 'mt-0.5 text-[11px] leading-4 text-muted-foreground' }, [
+      parseDateLabel(conversation.updated_time || conversation.created_time),
+      conversation.is_pinned
+        ? h(
+            'span',
+            { class: 'ml-2 align-middle text-[10px] text-muted-foreground' },
+            '已置顶',
+          )
+        : null,
+    ]),
+  ]);
+}
+
+const conversationItems = computed<ConversationsProps['items']>(() => {
+  return conversations.value.map((conversation) => ({
+    key: conversation.conversation_id,
+    label: renderConversationLabel(conversation),
+  }));
+});
+
+const conversationCreation = computed<ConversationsProps['creation']>(() => ({
+  disabled: sending.value || !canCreateNewConversation.value,
+  onClick: createNewConversation,
+}));
+
+function getConversationListMenu(value: { key?: string; type?: string }) {
+  if (!value || 'type' in value) {
+    return { items: [] };
+  }
+
+  const conversation = conversations.value.find(
+    (item) => item.conversation_id === value.key,
+  );
+  if (!conversation) {
+    return { items: [] };
+  }
+
+  return {
+    items: getConversationMenuItems(conversation),
+    onClick: (info: { domEvent: Event; key: number | string }) => {
+      info.domEvent.stopPropagation();
+      handleConversationMenuClick(String(info.key), conversation);
+    },
+  };
+}
+
+function handleConversationActiveChange(value: number | string) {
+  void selectConversation(String(value));
+}
+
+const quickPhrasePromptItems = computed<NonNullable<PromptsProps['items']>>(
+  () => {
+    return quickPhrases.value.map((item) => ({
+      description: item.content,
+      key: item.id,
+      label: item.title,
+    }));
+  },
+);
+
+function handleQuickPhrasePromptClick(info: PromptsClickInfo) {
+  const target = quickPhrases.value.find(
+    (item) => String(item.id) === String(info.data.key),
+  );
+
+  if (!target) {
+    return;
+  }
+
+  appendQuickPhrase(target);
+  quickPhrasePopoverOpen.value = false;
+}
+
+function handleSenderSubmit(messageText: string) {
+  void submitChat(undefined, true, messageText);
+}
+
+function handleSenderChange(value: string) {
+  prompt.value = value;
+}
+
+function getMessageMarkdownContent(
+  message: ChatMessageItem,
+  content: BubbleProps['content'],
+) {
+  if (message.structured_data && !message.content) {
+    return `\`\`\`json\n${JSON.stringify(message.structured_data, null, 2)}\n\`\`\``;
+  }
+
+  return String(content ?? '');
+}
+
+function getMessageContentRender(
+  message: ChatMessageItem,
+): BubbleProps['contentRender'] {
+  return (content) => {
+    const text = getMessageMarkdownContent(message, content);
+
+    return h(MarkdownContent, {
+      content: text,
+      streaming: Boolean(message.streaming),
+    });
+  };
+}
+
+function renderMessageHeader(message: ChatMessageItem) {
+  return h('div', { class: 'mb-1.5 text-xs text-muted-foreground' }, [
+    getMessageDisplayName(message),
+    ' · ',
+    parseDateLabel(message.timestamp),
+  ]);
+}
+
+function getMessageDisplayName(message: ChatMessageItem) {
+  if (message.role === 'user') {
+    return '你';
+  }
+
+  return selectedModelId.value ? selectedModelLabel.value : 'AI 助手';
+}
+
+function renderMessageAvatar(message: ChatMessageItem): BubbleProps['avatar'] {
+  return h(AAvatar, undefined, () => (message.role === 'user' ? '你' : 'AI'));
+}
+
+function confirmDeleteMessageChain(item: ChatMessageItem) {
+  confirm({
+    content: `确认删除第 ${item.message_index + 1} 条消息及其后续历史吗？`,
+    icon: 'warning',
+  }).then(async () => {
+    await deleteMessageChain(item);
+  });
+}
+
+function getMessageActionItems(
+  message: ChatMessageItem,
+): ActionsProps['items'] {
+  const items: ActionsProps['items'] = [
+    {
+      icon: h(IconifyIcon, { class: 'size-3.5', icon: 'mdi:content-copy' }),
+      key: 'copy',
+      label: '复制',
+      onItemClick: () => copyMessageContent(message),
+    },
+  ];
+
+  if (message.role === 'user') {
+    items.push(
+      {
+        icon: h(IconifyIcon, { class: 'size-3.5', icon: 'mdi:refresh' }),
+        key: 'regenerate',
+        label: '重新生成',
+        onItemClick: () => regenerateUserMessage(message),
+      },
+      {
+        icon: h(IconifyIcon, { class: 'size-3.5', icon: 'mdi:pencil-outline' }),
+        key: 'edit',
+        label: '编辑保存',
+        onItemClick: () => beginEditMessage(message, 'save'),
+      },
+      {
+        icon: h(IconifyIcon, { class: 'size-3.5', icon: 'mdi:send-outline' }),
+        key: 'edit-resend',
+        label: '编辑重发',
+        onItemClick: () => beginEditMessage(message, 'resend'),
+      },
+    );
+  }
+
+  if (message.role === 'model') {
+    items.push({
+      icon: h(IconifyIcon, { class: 'size-3.5', icon: 'mdi:refresh' }),
+      key: 'retry',
+      label: '重新生成',
+      onItemClick: () => regenerateMessage(message),
+    });
+  }
+
+  items.push({
+    danger: true,
+    icon: h(IconifyIcon, { class: 'size-3.5', icon: 'mdi:delete-outline' }),
+    key: 'delete',
+    label: '删除后续',
+    onItemClick: () => confirmDeleteMessageChain(message),
+  });
+
+  return items;
+}
+
+function renderMessageFooter(message: ChatMessageItem) {
+  return h(Actions, {
+    fadeIn: true,
+    items: getMessageActionItems(message),
+  });
+}
+
+function renderMessageExtra(message: ChatMessageItem) {
+  if (
+    !message.is_error ||
+    (!message.conversation_id &&
+      (!message.error_message || message.error_message === message.content))
+  ) {
+    return undefined;
+  }
+
+  const children = [];
+
+  if (message.error_message && message.error_message !== message.content) {
+    children.push(message.error_message);
+  }
+
+  if (message.conversation_id) {
+    children.push(
+      h('div', { class: children.length > 0 ? 'mt-1' : undefined }, [
+        '对话 ID: ',
+        message.conversation_id,
+      ]),
+    );
+  }
+
+  return h(
+    'div',
+    { class: 'text-xs leading-6 whitespace-pre-wrap text-destructive/90' },
+    children,
+  );
+}
+
+function renderFooterIconButton(options: {
+  disabled?: boolean;
+  icon: string;
+  onClick?: () => void;
+  title: string;
+}) {
+  return h(AButton, {
+    class: 'inline-flex size-8 items-center justify-center !px-0',
+    disabled: options.disabled,
+    htmlType: 'button',
+    icon: h(IconifyIcon, {
+      class: 'size-4',
+      icon: options.icon,
+    }),
+    onClick: () => {
+      options.onClick?.();
+    },
+    size: 'small',
+    title: options.title,
+    type: 'text',
+  });
+}
+
+function renderThinkingPopoverContent() {
+  return h('div', { class: 'w-[320px] space-y-3' }, [
+    h('div', { class: 'text-xs font-medium text-foreground' }, '思考链'),
+    h(
+      'div',
+      {
+        class:
+          'flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3',
+      },
+      [
+        h(
+          'div',
+          { class: 'min-w-0 text-sm font-medium text-foreground' },
+          '返回思考链',
+        ),
+        h(ASwitch, {
+          checked: includeThinking.value,
+          size: 'small',
+          'onUpdate:checked': (value) => {
+            includeThinking.value = Boolean(value);
+          },
+        }),
+      ],
+    ),
+    h(
+      'div',
+      { class: 'space-y-2' },
+      REASONING_EFFORT_OPTIONS.map((item) =>
+        h(
+          'button',
+          {
+            key: item.label,
+            class: [
+              'flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors',
+              reasoningEffort.value === item.value
+                ? 'border-primary/35 bg-primary/10'
+                : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30',
+            ],
+            onClick: () => {
+              reasoningEffort.value = item.value;
+            },
+            type: 'button',
+          },
+          [
+            h(
+              'span',
+              {
+                class: [
+                  'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px]',
+                  reasoningEffort.value === item.value
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : 'border-border bg-background text-transparent',
+                ],
+              },
+              '✓',
+            ),
+            h('span', { class: 'min-w-0 flex-1' }, [
+              h(
+                'span',
+                { class: 'block text-xs font-medium text-foreground' },
+                item.label,
+              ),
+              h(
+                'span',
+                { class: 'mt-1 block text-[11px] text-muted-foreground/75' },
+                item.desc,
+              ),
+            ]),
+          ],
+        ),
+      ),
+    ),
+  ]);
+}
+
+function renderWebSearchPopoverContent() {
+  return h('div', { class: 'w-[280px] space-y-2' }, [
+    h('div', { class: 'text-xs font-medium text-foreground' }, '网络搜索'),
+    ...WEB_SEARCH_OPTIONS.map((item) =>
+      h(
+        'button',
+        {
+          key: item.value,
+          class: [
+            'flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors',
+            webSearch.value === item.value
+              ? 'border-primary/35 bg-primary/10'
+              : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30',
+          ],
+          onClick: () => {
+            webSearch.value = item.value;
+          },
+          type: 'button',
+        },
+        [
+          h(
+            'span',
+            {
+              class: [
+                'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px]',
+                webSearch.value === item.value
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : 'border-border bg-background text-transparent',
+              ],
+            },
+            '✓',
+          ),
+          h('span', { class: 'min-w-0 flex-1' }, [
+            h(
+              'span',
+              { class: 'block text-xs font-medium text-foreground' },
+              item.label,
+            ),
+            h(
+              'span',
+              { class: 'mt-1 block text-[11px] text-muted-foreground/75' },
+              item.desc,
+            ),
+          ]),
+        ],
+      ),
+    ),
+  ]);
+}
+
+function renderMcpPopoverContent() {
+  if (mcps.value.length === 0) {
+    return h(AEmpty, {
+      description: '暂无可用 MCP',
+      image: null,
+    });
+  }
+
+  return h('div', { class: 'w-[320px] space-y-3' }, [
+    h('div', { class: 'text-xs font-medium text-foreground' }, 'MCP'),
+    h(
+      'div',
+      { class: 'flex max-h-[220px] flex-col gap-2 overflow-y-auto' },
+      mcps.value.map((item) =>
+        h(
+          'button',
+          {
+            key: item.id,
+            class: [
+              'flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors',
+              isMcpSelected(item.id)
+                ? 'border-primary/35 bg-primary/10'
+                : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30',
+            ],
+            onClick: () => {
+              toggleMcpSelection(item.id);
+            },
+            title: item.description || item.name,
+            type: 'button',
+          },
+          [
+            h(
+              'span',
+              {
+                class: [
+                  'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px]',
+                  isMcpSelected(item.id)
+                    ? 'border-primary bg-primary text-primary-foreground'
+                    : 'border-border bg-background text-transparent',
+                ],
+              },
+              '✓',
+            ),
+            h('span', { class: 'min-w-0 flex-1' }, [
+              h(
+                'span',
+                { class: 'block text-xs font-medium text-foreground' },
+                item.name,
+              ),
+              h(
+                'span',
+                {
+                  class:
+                    'mt-1 block truncate text-[11px] text-muted-foreground/75',
+                },
+                item.description ||
+                  item.command ||
+                  item.url ||
+                  `MCP #${item.id}`,
+              ),
+            ]),
+          ],
+        ),
+      ),
+    ),
+  ]);
+}
+
+function renderQuickPhrasePopoverContent() {
+  return h('div', { class: 'w-[320px]' }, [
+    h('div', { class: 'mb-2 text-xs font-medium text-foreground' }, '快捷短语'),
+    quickPhraseLoading.value
+      ? h(ASpin, { size: 'small' })
+      : quickPhrasePromptItems.value.length > 0
+        ? h('div', { class: 'max-h-[260px] overflow-y-auto' }, [
+            h(Prompts, {
+              items: quickPhrasePromptItems.value,
+              onItemClick: handleQuickPhrasePromptClick,
+              title: '点击插入到输入框',
+              vertical: true,
+            }),
+          ])
+        : h(AEmpty, {
+            description: '暂无快捷短语',
+            image: null,
+          }),
+  ]);
+}
+
+const renderSenderFooter: NonNullable<SenderProps['footer']> = (_, info) => {
+  const { LoadingButton, SendButton } = info.components;
+
+  return h(
+    AFlex,
+    {
+      align: 'center',
+      gap: 'small',
+      justify: 'space-between',
+      vertical: false,
+      wrap: 'wrap',
+    },
+    [
+      h(
+        AFlex,
+        {
+          align: 'center',
+          gap: 'middle',
+          wrap: 'wrap',
+        },
+        [
+          renderFooterIconButton({
+            disabled: sending.value || !canCreateNewConversation.value,
+            icon: 'mdi:message-plus-outline',
+            onClick: createNewConversation,
+            title: '新建话题',
+          }),
+          h(
+            Popover,
+            { placement: 'topLeft', trigger: 'click' },
+            {
+              content: () => renderThinkingPopoverContent(),
+              default: () =>
+                renderFooterIconButton({
+                  disabled: sending.value,
+                  icon: 'mdi:head-lightbulb-outline',
+                  title: includeThinking.value
+                    ? reasoningEffort.value
+                      ? `思考链：${reasoningEffort.value}`
+                      : '思考链已开启'
+                    : '思考链',
+                }),
+            },
+          ),
+          h(
+            Popover,
+            { placement: 'topLeft', trigger: 'click' },
+            {
+              content: () => renderWebSearchPopoverContent(),
+              default: () =>
+                renderFooterIconButton({
+                  disabled: sending.value,
+                  icon: 'mdi:web',
+                  title: `联网搜索：${webSearchButtonLabel.value}`,
+                }),
+            },
+          ),
+          h(
+            Popover,
+            { placement: 'topLeft', trigger: 'click' },
+            {
+              content: () => renderMcpPopoverContent(),
+              default: () =>
+                renderFooterIconButton({
+                  disabled: sending.value,
+                  icon: 'simple-icons:modelcontextprotocol',
+                  title:
+                    selectedMcpIds.value.length > 0
+                      ? `已选择 ${selectedMcpIds.value.length} 个 MCP`
+                      : '选择 MCP',
+                }),
+            },
+          ),
+          h(
+            Popover,
+            {
+              align: { overflow: { adjustX: false, adjustY: true } },
+              onOpenChange: handleQuickPhrasePopoverOpenChange,
+              open: quickPhrasePopoverOpen.value,
+              placement: 'topLeft',
+              trigger: 'click',
+            },
+            {
+              content: () => renderQuickPhrasePopoverContent(),
+              default: () =>
+                renderFooterIconButton({
+                  disabled: sending.value,
+                  icon: 'mdi:lightning-bolt-outline',
+                  title: '快捷短语',
+                }),
+            },
+          ),
+          renderFooterIconButton({
+            disabled: sending.value,
+            icon: 'mdi:cog-outline',
+            onClick: () => {
+              settingsModalApi.open();
+            },
+            title: hasAdvancedSettings.value
+              ? '参数设置（已调整）'
+              : '参数设置',
+          }),
+          renderFooterIconButton({
+            disabled: !canClearMessages.value,
+            icon: 'mdi:eraser-variant',
+            onClick: () => {
+              void clearMessages();
+            },
+            title: '清空消息',
+          }),
+        ],
+      ),
+      h(
+        AFlex,
+        {
+          align: 'center',
+          class: 'w-full md:w-auto',
+          gap: 'small',
+          justify: 'flex-end',
+          wrap: 'wrap',
+        },
+        [
+          composerHint.value
+            ? h(
+                'span',
+                {
+                  class:
+                    'inline-flex max-w-full whitespace-pre-wrap text-left text-xs leading-5 text-muted-foreground',
+                },
+                composerHint.value,
+              )
+            : null,
+          sending.value
+            ? h(LoadingButton, {
+                type: 'default',
+              })
+            : h(SendButton, {
+                class:
+                  'inline-flex size-8 items-center justify-center !rounded-md !px-0',
+                disabled:
+                  !selectedProviderId.value ||
+                  !selectedModelId.value ||
+                  !prompt.value.trim(),
+                icon: h(IconifyIcon, {
+                  class: 'size-4',
+                  icon: 'mdi:send',
+                }),
+                shape: 'default',
+                type: 'text',
+              }),
+        ],
+      ),
+    ],
+  );
+};
 
 watch(
   selectedProviderId,
@@ -1626,10 +2309,6 @@ const [SettingsModal, settingsModalApi] = useVbenModal({
 });
 
 onMounted(async () => {
-  composerHeight.value = COMPOSER_DEFAULT_HEIGHT;
-  await nextTick();
-  setupComposerLayoutObserver();
-
   await fetchProviders();
   await fetchMcps();
   await fetchConversations(false);
@@ -1643,8 +2322,6 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  stopComposerResize();
-  teardownComposerLayoutObserver();
   abortController?.abort();
 });
 </script>
@@ -1655,85 +2332,19 @@ onBeforeUnmount(() => {
       <aside
         class="flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius)] border border-border bg-card"
       >
-        <div class="border-b border-border px-4 py-4">
-          <div>
-            <div class="text-sm font-semibold text-foreground">话题历史</div>
-            <div class="mt-1 text-xs text-muted-foreground">
-              最近会话、置顶与历史上下文
-            </div>
-          </div>
-        </div>
-
-        <div
-          class="flex-1 overflow-y-auto p-3"
-          :class="
-            conversations.length === 0
-              ? 'flex items-center justify-center'
-              : 'space-y-3'
-          "
-        >
-          <a-spin
+        <div class="flex-1 overflow-y-auto p-3">
+          <ASpin
             v-if="sidebarLoading && conversations.length === 0"
             class="block py-10"
           />
-          <a-empty
-            v-else-if="conversations.length === 0"
-            description="暂无聊天历史"
-            :image="null"
-          />
           <template v-else>
-            <a-dropdown
-              v-for="conversation in conversations"
-              :key="conversation.conversation_id"
-              :menu="{
-                items: getConversationMenuItems(conversation),
-                onClick: ({ key }) =>
-                  handleConversationMenuClick(String(key), conversation),
-              }"
-              :trigger="['contextmenu']"
-            >
-              <div
-                class="group relative rounded-xl border transition-all duration-200"
-                :class="
-                  conversation.conversation_id === activeConversationId
-                    ? 'border-primary/45 bg-primary/10 shadow-[0_10px_30px_-18px_hsl(var(--primary)/0.55)] ring-1 ring-primary/15'
-                    : 'border-transparent bg-background hover:border-border hover:bg-accent/35'
-                "
-              >
-                <button
-                  class="absolute top-2.5 right-2.5 z-10 inline-flex size-7 items-center justify-center text-muted-foreground opacity-0 transition-colors hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100"
-                  :title="`删除 ${conversation.title}`"
-                  type="button"
-                  @click.stop="confirmRemoveConversation(conversation)"
-                >
-                  <IconifyIcon class="size-3.5" icon="mdi:close" />
-                </button>
-                <button
-                  class="min-w-0 w-full p-3 pr-11 text-left"
-                  type="button"
-                  @click="selectConversation(conversation.conversation_id)"
-                >
-                  <span class="flex items-center gap-2">
-                    <span class="truncate text-sm font-medium text-foreground">
-                      {{ conversation.title }}
-                    </span>
-                    <span
-                      v-if="conversation.is_pinned"
-                      class="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
-                    >
-                      置顶
-                    </span>
-                  </span>
-                  <span
-                    class="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground"
-                  >
-                    <span>{{
-                      parseDateLabel(conversation.updated_time || conversation.created_time)
-                    }}</span>
-                  </span>
-                </button>
-              </div>
-            </a-dropdown>
+            <Conversations
+              :active-key="activeConversationId"
+              :creation="conversationCreation"
+              :items="conversationItems"
+              :menu="getConversationListMenu"
+              :on-active-change="handleConversationActiveChange"
+            />
             <VbenButton
               v-if="hasMoreConversations"
               block
@@ -1776,7 +2387,9 @@ onBeforeUnmount(() => {
               </template>
               <template v-else>
                 <div class="flex min-w-0 items-center justify-between gap-4">
-                  <div class="inline-flex min-w-0 max-w-full items-center gap-2">
+                  <div
+                    class="inline-flex min-w-0 max-w-full items-center gap-2"
+                  >
                     <div
                       class="min-w-0 max-w-[220px] truncate text-[13px] font-semibold leading-7 text-foreground"
                       :title="activeConversationTitle"
@@ -1789,14 +2402,17 @@ onBeforeUnmount(() => {
                     >
                       置顶
                     </span>
-                    <span class="shrink-0 text-xs leading-none text-muted-foreground"
+                    <span
+                      class="shrink-0 text-xs leading-none text-muted-foreground"
                       >&gt;</span
                     >
                     <a-popover placement="bottomLeft" trigger="click">
                       <template #content>
                         <div class="w-[280px] space-y-3">
                           <div>
-                            <div class="mb-2 text-xs font-medium text-foreground">
+                            <div
+                              class="mb-2 text-xs font-medium text-foreground"
+                            >
                               供应商
                             </div>
                             <a-select
@@ -1808,7 +2424,9 @@ onBeforeUnmount(() => {
                             />
                           </div>
                           <div>
-                            <div class="mb-2 text-xs font-medium text-foreground">
+                            <div
+                              class="mb-2 text-xs font-medium text-foreground"
+                            >
                               模型
                             </div>
                             <a-select
@@ -1830,7 +2448,9 @@ onBeforeUnmount(() => {
                         :disabled="sending || resourcesLoading"
                         type="button"
                       >
-                        <span class="truncate">{{ selectedProviderModelLabel }}</span>
+                        <span class="truncate">{{
+                          selectedProviderModelLabel
+                        }}</span>
                         <IconifyIcon
                           class="size-3.5 shrink-0 text-muted-foreground"
                           icon="mdi:chevron-down"
@@ -1864,25 +2484,37 @@ onBeforeUnmount(() => {
           ref="messageContainerRef"
           class="flex-1 overflow-y-auto bg-background/60 px-5 py-5 md:px-6 md:py-6"
         >
-          <a-alert
-            v-if="streamError"
-            class="mb-4"
-            :message="streamError"
-            show-icon
-            type="error"
-          />
-          <a-spin v-if="detailLoading" class="block py-20" />
+          <a-alert v-if="streamError" class="mb-4" show-icon type="error">
+            <template #message>
+              <div class="whitespace-pre-wrap">{{ streamError }}</div>
+            </template>
+          </a-alert>
+          <div
+            v-if="detailLoading"
+            class="flex min-h-full items-center justify-center"
+          >
+            <ASpin />
+          </div>
           <div
             v-else-if="displayMessages.length === 0"
             class="flex min-h-full items-center justify-center"
           >
-            <a-empty description="选择模型后开始对话，历史会自动保存" />
+            <div class="w-full max-w-[720px]">
+              <Welcome
+                :description="
+                  selectedProviderId && selectedModelId
+                    ? `当前模型：${selectedProviderModelLabel}，发送首条消息后自动创建会话`
+                    : '选择模型后开始对话，历史会自动保存'
+                "
+                title="开始新的对话"
+              />
+            </div>
           </div>
           <template v-else>
             <div
               v-for="item in displayMessages"
               :key="item.id"
-              class="ai-message mb-3.5 flex"
+              class="mb-3.5 flex"
               :class="
                 item.kind === 'message' && item.message.role === 'user'
                   ? 'justify-end'
@@ -1890,7 +2522,7 @@ onBeforeUnmount(() => {
               "
             >
               <div
-                class="flex max-w-[92%] flex-col animate-[ai-message-enter_0.24s_ease-out] md:max-w-[84%]"
+                class="flex max-w-[92%] flex-col md:max-w-[84%]"
                 :class="
                   item.kind === 'message' && item.message.role === 'user'
                     ? 'items-end'
@@ -1898,636 +2530,87 @@ onBeforeUnmount(() => {
                 "
               >
                 <div
-                  class="mb-1.5 inline-flex items-center gap-2 px-1"
-                  :class="
-                    item.kind === 'message' && item.message.role === 'user'
-                      ? 'justify-end'
-                      : 'justify-start'
+                  v-if="
+                    item.kind === 'pending-thinking' || item.thinkingContent
                   "
+                  class="mb-3 w-full"
                 >
-                  <span
-                    class="inline-flex h-[22px] min-w-7 items-center justify-center rounded-full px-2 text-[11px] font-semibold tracking-[0.02em]"
-                    :class="
-                      item.kind === 'message' && item.message.role === 'user'
-                        ? 'border border-primary/20 bg-primary/12 text-primary'
-                        : 'border border-border bg-background text-muted-foreground'
-                    "
+                  <Think
+                    :blink="item.thinkingStreaming"
+                    :expanded="isThinkingExpanded(item)"
+                    :loading="item.thinkingStreaming"
+                    :title="getThinkingToggleLabel(item)"
+                    @update:expanded="toggleThinkingPanel(item)"
                   >
-                    {{
-                      item.kind === 'message' && item.message.role === 'user'
-                        ? '你'
-                        : 'AI'
-                    }}
-                  </span>
-                  <span class="text-xs text-muted-foreground">
-                    {{
-                      parseDateLabel(
-                        item.kind === 'message'
-                          ? item.message.timestamp
-                          : item.thinkingTimestamp,
-                      )
-                    }}
-                  </span>
+                    <MarkdownContent
+                      :content="item.thinkingContent || ''"
+                      :streaming="Boolean(item.thinkingStreaming)"
+                    />
+                  </Think>
                 </div>
 
-                <div
-                  class="relative overflow-hidden border px-4 py-2.5 text-sm leading-[1.65] text-foreground shadow-[0_10px_24px_-18px_rgb(15_23_42/0.42),0_1px_2px_0_rgb(15_23_42/0.06)] transition-all duration-200 hover:shadow-[0_18px_36px_-24px_rgb(15_23_42/0.38),0_4px_10px_0_rgb(15_23_42/0.06)]"
-                  :class="
-                    item.kind === 'message' && item.message.is_error
-                      ? 'rounded-[12px] border-destructive/25 bg-[linear-gradient(180deg,hsl(var(--destructive)/0.1),hsl(var(--destructive)/0.04))]'
-                      : item.kind === 'message' && item.message.role === 'user'
-                      ? 'rounded-[12px] border-primary/20 bg-[linear-gradient(180deg,hsl(var(--primary)/0.14),hsl(var(--primary)/0.08))]'
-                      : 'rounded-[12px] border-border bg-[radial-gradient(circle_at_top_left,hsl(var(--accent)/0.35),transparent_34%),linear-gradient(180deg,hsl(var(--card)),hsl(var(--background)))]'
-                  "
-                >
-                  <div
-                    v-if="item.kind === 'pending-thinking' || item.thinkingContent"
-                    class="ai-thinking-panel mb-3"
-                    :class="{ 'ai-thinking-panel--open': isThinkingExpanded(item) }"
-                  >
-                    <button
-                      class="ai-thinking-panel__toggle"
-                      type="button"
-                      @click="toggleThinkingPanel(item)"
-                    >
-                      <span class="inline-flex items-center gap-2">
-                        <span
-                          class="size-2 rounded-full bg-amber-500"
-                          :class="{
-                            'animate-[ai-status-pulse_1.4s_ease-out_infinite]':
-                              item.thinkingStreaming,
-                          }"
-                        ></span>
-                        <span>{{ getThinkingToggleLabel(item) }}</span>
-                      </span>
-                      <IconifyIcon
-                        class="size-4 transition-transform"
-                        :class="{ 'rotate-180': isThinkingExpanded(item) }"
-                        icon="mdi:chevron-down"
-                      />
-                    </button>
-                    <div
-                      v-if="isThinkingExpanded(item)"
-                      class="ai-thinking-panel__content ai-markdown"
-                    >
-                      <div
-                        v-if="item.thinkingStreaming"
-                        class="whitespace-pre-wrap text-[13px] leading-6 text-muted-foreground"
-                      >
-                        {{ item.thinkingContent || '' }}
-                      </div>
-                      <AIChatMarkdown
-                        v-else
-                        custom-id="ai-chat-thinking"
-                        :content="item.thinkingContent || ''"
-                      />
-                    </div>
-                  </div>
-                  <textarea
-                    v-if="item.kind === 'message' && isEditingMessage(item.message)"
-                    v-model="editingMessageDraft"
-                    :disabled="sending"
-                    class="block min-h-[88px] w-[min(520px,70vw)] resize-none overflow-y-auto border-0 bg-transparent p-0 leading-[1.7] text-inherit outline-none placeholder:text-muted-foreground/70"
-                    placeholder="请输入消息内容"
-                    rows="3"
-                    spellcheck="false"
-                  ></textarea>
-                  <div
-                    v-else-if="
-                      item.kind === 'message' && item.message.role === 'user'
+                <template v-if="item.kind === 'message'">
+                  <Bubble
+                    :avatar="renderMessageAvatar(item.message)"
+                    :content="item.message.content"
+                    :content-render="getMessageContentRender(item.message)"
+                    :editable="
+                      isEditingMessage(item.message)
+                        ? {
+                            cancelText: '取消',
+                            editing: true,
+                            okText:
+                              editingMessageIntent === 'resend'
+                                ? '重发'
+                                : '保存',
+                          }
+                        : false
                     "
-                    class="whitespace-pre-wrap"
-                  >
-                    {{ item.message.content }}
-                  </div>
-                  <div
-                    v-else-if="
-                      item.kind === 'message' &&
+                    :extra="renderMessageExtra(item.message)"
+                    :footer="renderMessageFooter(item.message)"
+                    :footer-placement="
+                      item.message.role === 'user' ? 'outer-end' : 'outer-start'
+                    "
+                    :header="renderMessageHeader(item.message)"
+                    :loading="
                       item.message.role === 'model' &&
                       item.message.streaming &&
                       !item.message.content &&
                       !item.message.structured_data &&
                       !item.message.is_error
                     "
-                    class="flex min-h-10 items-center"
-                  >
-                    <div class="flex w-[180px] items-center gap-2">
-                      <span class="h-2 flex-1 animate-pulse rounded-full bg-foreground/10"></span>
-                      <span class="h-2 w-16 animate-pulse rounded-full bg-foreground/10"></span>
-                    </div>
-                  </div>
-                  <div
-                    v-else-if="
-                      item.kind === 'message' &&
-                      item.message.role === 'model' &&
-                      item.message.streaming
+                    :placement="item.message.role === 'user' ? 'end' : 'start'"
+                    :streaming="
+                      item.message.role === 'model' && item.message.streaming
                     "
-                    class="whitespace-pre-wrap leading-[1.7]"
-                  >
-                    {{ item.message.content }}
-                  </div>
-                  <div v-else-if="item.kind === 'message'" class="ai-markdown">
-                    <AIChatMarkdown
-                      custom-id="ai-chat"
-                      :content="item.message.content"
-                    />
-                  </div>
-                  <div
-                    v-if="
-                      item.kind === 'message' &&
-                      item.message.is_error &&
-                      (
-                        (item.message.error_message &&
-                          item.message.error_message !== item.message.content) ||
-                        item.message.conversation_id
-                      )
+                    :on-edit-cancel="cancelEditMessage"
+                    :on-edit-confirm="
+                      (value) =>
+                        editingMessageIntent === 'resend'
+                          ? resendEditedMessage(String(value))
+                          : saveEditedMessage(String(value))
                     "
-                    class="mt-3 text-xs leading-6 whitespace-pre-wrap text-destructive/90"
-                  >
-                    <template
-                      v-if="
-                        item.kind === 'message' &&
-                        item.message.error_message &&
-                        item.message.error_message !== item.message.content
-                      "
-                    >
-                      {{ item.message.error_message }}
-                    </template>
-                    <div
-                      v-if="item.kind === 'message' && item.message.conversation_id"
-                      class="mt-1"
-                    >
-                      对话 ID: {{ item.message.conversation_id }}
-                    </div>
-                  </div>
-                </div>
-
-                <div
-                  v-if="
-                    item.kind === 'message' &&
-                    !item.message.streaming &&
-                    activeConversationId &&
-                    item.message.message_index !== undefined
-                  "
-                  class="ai-message__actions mt-1 flex min-h-[28px] items-center gap-1 px-1"
-                  :class="
-                    item.message.role === 'user' ? 'justify-end' : 'justify-start'
-                  "
-                >
-                  <template v-if="isEditingMessage(item.message)">
-                    <button
-                      class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
-                      :disabled="sending"
-                      title="取消"
-                      type="button"
-                      @click="cancelEditMessage"
-                    >
-                      <IconifyIcon class="size-3.5" icon="mdi:close" />
-                    </button>
-                    <button
-                      class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
-                      :disabled="sending"
-                      title="保存"
-                      type="button"
-                      @click="saveEditedMessage"
-                    >
-                      <IconifyIcon class="size-3.5" icon="mdi:content-save-outline" />
-                    </button>
-                    <button
-                      v-if="item.message.role === 'user'"
-                      class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
-                      :disabled="sending"
-                      title="重新发送"
-                      type="button"
-                      @click="resendEditedMessage"
-                    >
-                      <IconifyIcon class="size-3.5" icon="mdi:send-outline" />
-                    </button>
-                  </template>
-                  <button
-                    v-if="item.message.role === 'user' && !isEditingMessage(item.message)"
-                    class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
-                    title="复制"
-                    type="button"
-                    @click="copyMessageContent(item.message)"
-                  >
-                    <IconifyIcon class="size-3.5" icon="mdi:content-copy" />
-                  </button>
-                  <button
-                    v-if="item.message.role === 'model' && !isEditingMessage(item.message)"
-                    class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
-                    title="复制"
-                    type="button"
-                    @click="copyMessageContent(item.message)"
-                  >
-                    <IconifyIcon class="size-3.5" icon="mdi:content-copy" />
-                  </button>
-                  <button
-                    v-if="item.message.role === 'user' && !isEditingMessage(item.message)"
-                    class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
-                    :disabled="sending"
-                    title="重新生成"
-                    type="button"
-                    @click="regenerateUserMessage(item.message)"
-                  >
-                    <IconifyIcon class="size-3.5" icon="mdi:refresh" />
-                  </button>
-                  <button
-                    v-if="item.message.role === 'user' && !isEditingMessage(item.message)"
-                    class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
-                    title="编辑重发"
-                    type="button"
-                    @click="beginEditMessage(item.message)"
-                  >
-                    <IconifyIcon class="size-3.5" icon="mdi:pencil-outline" />
-                  </button>
-                  <button
-                    v-if="item.message.role === 'model' && !isEditingMessage(item.message)"
-                    class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
-                    title="重新生成"
-                    type="button"
-                    @click="regenerateMessage(item.message)"
-                  >
-                    <IconifyIcon class="size-3.5" icon="mdi:refresh" />
-                  </button>
-                  <a-popconfirm
-                    v-if="!isEditingMessage(item.message)"
-                    title="删除该消息及其后续历史？"
-                    :description="`第 ${item.message.message_index + 1} 条消息`"
-                    @confirm="deleteMessageChain(item.message)"
-                  >
-                    <button
-                      class="inline-flex h-6 min-w-6 items-center justify-center rounded-full border-0 bg-transparent px-2 text-xs text-muted-foreground transition-colors hover:bg-accent/75 hover:text-foreground"
-                      title="删除后续"
-                      type="button"
-                    >
-                      <IconifyIcon class="size-3.5" icon="mdi:delete-outline" />
-                    </button>
-                  </a-popconfirm>
-                </div>
+                  />
+                </template>
               </div>
             </div>
           </template>
         </div>
 
         <div class="bg-card px-5 pb-5 pt-4 md:px-6 md:pb-6 md:pt-4">
-          <div
-            class="ai-composer"
-            :style="{ '--ai-composer-textarea-height': `${composerHeight}px` }"
-          >
-            <div
-              class="ai-composer__resize-handle"
-              :class="{
-                'ai-composer__resize-handle--dragging': isComposerResizing,
-              }"
-              @mousedown.prevent.stop="startComposerResize"
-            >
-              <span class="ai-composer__resize-grip"></span>
-            </div>
-
-            <div class="ai-composer__shell">
-              <textarea
-                v-model="prompt"
-                :disabled="sending"
-                class="ai-composer__textarea"
-                placeholder="在这里输入消息，按 Enter 发送"
-                :style="{ height: `${composerHeight}px` }"
-                spellcheck="false"
-                @keydown="handlePromptKeydown"
-              ></textarea>
-              <div class="ai-composer__footer">
-                <div class="ai-composer__tools">
-                  <button
-                    class="ai-composer__tool"
-                    :disabled="sending || !canCreateNewConversation"
-                    title="新建话题"
-                    type="button"
-                    @click="createNewConversation"
-                  >
-                    <IconifyIcon
-                      class="size-4"
-                      icon="mdi:message-plus-outline"
-                    />
-                  </button>
-
-                  <button
-                    class="ai-composer__tool"
-                    disabled
-                    title="上传文件或文档（暂未开放）"
-                    type="button"
-                  >
-                    <IconifyIcon
-                      class="size-4"
-                      icon="mdi:file-document-plus-outline"
-                    />
-                  </button>
-
-                  <a-popover placement="topLeft" trigger="click">
-                    <template #content>
-                      <div class="w-[320px] space-y-3">
-                        <div class="text-xs font-medium text-foreground">
-                          思考链
-                        </div>
-                        <div class="flex items-center justify-between gap-4 rounded-xl border border-border bg-background px-4 py-3">
-                          <div class="min-w-0 text-sm font-medium text-foreground">
-                            返回思考链
-                          </div>
-                          <a-switch
-                            v-model:checked="includeThinking"
-                            size="small"
-                          />
-                        </div>
-                        <div class="space-y-2">
-                          <div class="text-xs font-medium text-foreground">
-                            推理强度
-                          </div>
-                          <button
-                            v-for="item in REASONING_EFFORT_OPTIONS"
-                            :key="item.label"
-                            class="flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors"
-                            :class="
-                              reasoningEffort === item.value
-                                ? 'border-primary/35 bg-primary/10'
-                                : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30'
-                            "
-                            type="button"
-                            @click="reasoningEffort = item.value"
-                          >
-                            <span
-                              class="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px]"
-                              :class="
-                                reasoningEffort === item.value
-                                  ? 'border-primary bg-primary text-primary-foreground'
-                                  : 'border-border bg-background text-transparent'
-                              "
-                            >
-                              ✓
-                            </span>
-                            <span class="min-w-0 flex-1">
-                              <span class="block text-xs font-medium text-foreground">
-                                {{ item.label }}
-                              </span>
-                              <span class="mt-1 block text-[11px] text-muted-foreground/75">
-                                {{ item.desc }}
-                              </span>
-                            </span>
-                          </button>
-                        </div>
-                      </div>
-                    </template>
-                    <button
-                      class="ai-composer__tool"
-                      :class="{
-                        'ai-composer__tool--active':
-                          includeThinking || !!reasoningEffort,
-                      }"
-                      :disabled="sending"
-                      :title="
-                        includeThinking
-                          ? reasoningEffort
-                            ? `思考链：${reasoningEffort}`
-                            : '已启用思考链'
-                          : '思考链'
-                      "
-                      type="button"
-                    >
-                      <IconifyIcon
-                        class="size-4"
-                        icon="mdi:head-lightbulb-outline"
-                      />
-                    </button>
-                  </a-popover>
-
-                  <a-popover placement="topLeft" trigger="click">
-                    <template #content>
-                      <div class="w-[280px] space-y-2">
-                        <div class="text-xs font-medium text-foreground">
-                          网络搜索
-                        </div>
-                        <button
-                          v-for="item in WEB_SEARCH_OPTIONS"
-                          :key="item.value"
-                          class="flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors"
-                          :class="
-                            webSearch === item.value
-                              ? 'border-primary/35 bg-primary/10'
-                              : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30'
-                          "
-                          type="button"
-                          @click="webSearch = item.value"
-                        >
-                          <span
-                            class="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px]"
-                            :class="
-                              webSearch === item.value
-                                ? 'border-primary bg-primary text-primary-foreground'
-                                : 'border-border bg-background text-transparent'
-                            "
-                          >
-                            ✓
-                          </span>
-                          <span class="min-w-0 flex-1">
-                            <span class="block text-xs font-medium text-foreground">
-                              {{ item.label }}
-                            </span>
-                            <span class="mt-1 block text-[11px] text-muted-foreground/75">
-                              {{ item.desc }}
-                            </span>
-                          </span>
-                        </button>
-                      </div>
-                    </template>
-                    <button
-                      class="ai-composer__tool"
-                      :class="{ 'ai-composer__tool--active': webSearch !== 'builtin' }"
-                      :disabled="sending"
-                      :title="
-                        webSearch === 'builtin'
-                          ? '网络搜索'
-                          : `网络搜索：${webSearch}`
-                      "
-                      type="button"
-                    >
-                      <IconifyIcon class="size-4" icon="mdi:web" />
-                    </button>
-                  </a-popover>
-
-                  <a-popover placement="topLeft" trigger="click">
-                    <template #content>
-                      <div class="w-[320px] space-y-3">
-                        <div class="text-xs font-medium text-foreground">
-                          MCP
-                        </div>
-                        <div
-                          v-if="mcps.length > 0"
-                          class="flex max-h-[220px] flex-col gap-2 overflow-y-auto"
-                        >
-                          <button
-                            v-for="item in mcps"
-                            :key="item.id"
-                            class="flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors"
-                            :class="
-                              isMcpSelected(item.id)
-                                ? 'border-primary/35 bg-primary/10'
-                                : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30'
-                            "
-                            :title="item.description || item.name"
-                            type="button"
-                            @click="toggleMcpSelection(item.id)"
-                          >
-                            <span
-                              class="mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px]"
-                              :class="
-                                isMcpSelected(item.id)
-                                  ? 'border-primary bg-primary text-primary-foreground'
-                                  : 'border-border bg-background text-transparent'
-                              "
-                            >
-                              ✓
-                            </span>
-                            <span class="min-w-0 flex-1">
-                              <span class="block text-xs font-medium text-foreground">
-                                {{ item.name }}
-                              </span>
-                              <span
-                                class="mt-1 block truncate text-[11px] text-muted-foreground/75"
-                              >
-                                {{
-                                  item.description ||
-                                  item.command ||
-                                  item.url ||
-                                  `MCP #${item.id}`
-                                }}
-                              </span>
-                            </span>
-                          </button>
-                        </div>
-                        <a-empty v-else :image="null" description="暂无可用 MCP" />
-                      </div>
-                    </template>
-                    <button
-                      class="ai-composer__tool"
-                      :class="{
-                        'ai-composer__tool--active': selectedMcpIds.length > 0,
-                      }"
-                      :disabled="sending"
-                      :title="
-                        selectedMcpIds.length > 0
-                          ? `已选择 ${selectedMcpIds.length} 个 MCP`
-                          : '选择 MCP'
-                      "
-                      type="button"
-                    >
-                      <IconifyIcon
-                        class="size-4"
-                        icon="simple-icons:modelcontextprotocol"
-                      />
-                    </button>
-                  </a-popover>
-
-                  <a-popover
-                    :align="{ overflow: { adjustX: false, adjustY: true } }"
-                    :open="quickPhrasePopoverOpen"
-                    placement="topLeft"
-                    trigger="click"
-                    @open-change="handleQuickPhrasePopoverOpenChange"
-                  >
-                    <template #content>
-                      <div class="w-[320px]">
-                        <div class="mb-2 text-xs font-medium text-foreground">
-                          快捷短语
-                        </div>
-                        <a-spin v-if="quickPhraseLoading" size="small" />
-                        <div
-                          v-else-if="quickPhrases.length > 0"
-                          class="flex max-h-[220px] flex-col gap-2 overflow-y-auto"
-                        >
-                          <button
-                            v-for="item in quickPhrases"
-                            :key="item.id"
-                            class="flex w-full items-start gap-3 rounded-xl border border-border bg-background px-3 py-2 text-left transition-colors hover:border-primary/30 hover:bg-accent/30"
-                            :title="item.content"
-                            type="button"
-                            @click="appendQuickPhrase(item)"
-                          >
-                            <span class="shrink-0 text-xs font-medium text-foreground">
-                              {{ item.title }}
-                            </span>
-                            <span class="min-w-0 flex-1 truncate text-[11px] text-muted-foreground/75">
-                              {{ item.content }}
-                            </span>
-                          </button>
-                        </div>
-                        <a-empty
-                          v-else
-                          :image="null"
-                          description="暂无快捷短语"
-                        />
-                      </div>
-                    </template>
-                    <button
-                      class="ai-composer__tool"
-                      :disabled="sending"
-                      title="快捷短语"
-                      type="button"
-                    >
-                      <IconifyIcon
-                        class="size-4"
-                        icon="mdi:lightning-bolt-outline"
-                      />
-                    </button>
-                  </a-popover>
-
-                  <button
-                    class="ai-composer__tool"
-                    :class="{
-                      'ai-composer__tool--active': hasAdvancedSettings,
-                    }"
-                    :disabled="sending"
-                    title="参数设置"
-                    type="button"
-                    @click="settingsModalApi.open()"
-                  >
-                    <IconifyIcon class="size-4" icon="mdi:cog-outline" />
-                  </button>
-
-                  <button
-                    class="ai-composer__tool"
-                    :disabled="!canClearMessages"
-                    title="清空消息"
-                    type="button"
-                    @click="clearMessages"
-                  >
-                    <IconifyIcon class="size-4" icon="mdi:eraser-variant" />
-                  </button>
-
-                  <button
-                    class="ai-composer__tool"
-                    :class="{ 'ai-composer__tool--active': isComposerExpanded }"
-                    title="展开输入框"
-                    type="button"
-                    @click="toggleComposerExpanded"
-                  >
-                    <IconifyIcon
-                      class="size-4"
-                      :icon="
-                        isComposerExpanded
-                          ? 'mdi:fullscreen-exit'
-                          : 'mdi:fullscreen'
-                      "
-                    />
-                  </button>
-                </div>
-
-                <div class="ai-composer__meta">
-                  <span v-if="composerHint" class="ai-composer__hint">{{
-                    composerHint
-                  }}</span>
-                  <span class="ai-composer__shortcut">Enter 发送</span>
-                  <span class="ai-composer__shortcut">Shift + Enter 换行</span>
-                </div>
-              </div>
-            </div>
+          <div class="relative">
+            <Sender
+              :auto-size="senderAutoSize"
+              :disabled="sending"
+              :footer="renderSenderFooter"
+              :loading="sending"
+              :on-cancel="stopStreaming"
+              :on-change="handleSenderChange"
+              :on-submit="handleSenderSubmit"
+              placeholder="在这里输入消息，按 Enter 发送"
+              :suffix="false"
+              :value="prompt"
+            />
           </div>
         </div>
       </section>
@@ -2553,15 +2636,25 @@ onBeforeUnmount(() => {
           </VbenButton>
         </div>
 
-        <section class="rounded-2xl border border-border bg-background/80 p-4 md:p-5">
+        <section
+          class="rounded-2xl border border-border bg-background/80 p-4 md:p-5"
+        >
           <div class="mb-4 text-sm font-semibold text-foreground">生成控制</div>
           <div class="grid gap-4 md:grid-cols-2">
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Temperature</span>
-                  <a-tooltip placement="right" title="控制回答的发散程度，越低越稳定，越高越灵活。取值范围 0 到 2。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <span class="text-sm font-medium text-foreground"
+                    >Temperature</span
+                  >
+                  <a-tooltip
+                    placement="right"
+                    title="控制回答的发散程度，越低越稳定，越高越灵活。取值范围 0 到 2。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
@@ -2577,8 +2670,14 @@ onBeforeUnmount(() => {
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
                   <span class="text-sm font-medium text-foreground">Top P</span>
-                  <a-tooltip placement="right" title="控制候选词范围，通常与 Temperature 二选一微调即可。取值范围 0 到 1。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <a-tooltip
+                    placement="right"
+                    title="控制候选词范围，通常与 Temperature 二选一微调即可。取值范围 0 到 1。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
@@ -2593,9 +2692,17 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Max Tokens</span>
-                  <a-tooltip placement="right" title="限制单次回答长度，可选；不填时由模型自行决定。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <span class="text-sm font-medium text-foreground"
+                    >Max Tokens</span
+                  >
+                  <a-tooltip
+                    placement="right"
+                    title="限制单次回答长度，可选；不填时由模型自行决定。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
@@ -2608,9 +2715,17 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Timeout</span>
-                  <a-tooltip placement="right" title="超过这个时间还没返回结果时，请求会被视为超时，单位为秒。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <span class="text-sm font-medium text-foreground"
+                    >Timeout</span
+                  >
+                  <a-tooltip
+                    placement="right"
+                    title="超过这个时间还没返回结果时，请求会被视为超时，单位为秒。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
@@ -2624,15 +2739,23 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section class="rounded-2xl border border-border bg-background/80 p-4 md:p-5">
+        <section
+          class="rounded-2xl border border-border bg-background/80 p-4 md:p-5"
+        >
           <div class="mb-4 text-sm font-semibold text-foreground">行为控制</div>
           <div class="grid gap-4 md:grid-cols-2">
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
                   <span class="text-sm font-medium text-foreground">Seed</span>
-                  <a-tooltip placement="right" title="固定随机种子后，更容易复现相似结果；该项可选。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <a-tooltip
+                    placement="right"
+                    title="固定随机种子后，更容易复现相似结果；该项可选。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
@@ -2641,9 +2764,17 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Presence Penalty</span>
-                  <a-tooltip placement="right" title="提高后更鼓励模型引入新内容，减少重复话题。取值范围 -2 到 2。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <span class="text-sm font-medium text-foreground"
+                    >Presence Penalty</span
+                  >
+                  <a-tooltip
+                    placement="right"
+                    title="提高后更鼓励模型引入新内容，减少重复话题。取值范围 -2 到 2。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
@@ -2658,9 +2789,17 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Frequency Penalty</span>
-                  <a-tooltip placement="right" title="提高后更少重复相同措辞，适合压制啰嗦输出。取值范围 -2 到 2。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <span class="text-sm font-medium text-foreground"
+                    >Frequency Penalty</span
+                  >
+                  <a-tooltip
+                    placement="right"
+                    title="提高后更少重复相同措辞，适合压制啰嗦输出。取值范围 -2 到 2。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
@@ -2673,39 +2812,59 @@ onBeforeUnmount(() => {
               />
             </div>
             <div class="md:col-span-2">
-              <div class="flex items-center justify-between gap-4 rounded-xl border border-border bg-card/70 px-4 py-3">
+              <div
+                class="flex items-center justify-between gap-4 rounded-xl border border-border bg-card/70 px-4 py-3"
+              >
                 <div class="min-w-0">
-                  <div class="text-sm font-medium text-foreground">启用内置工具</div>
+                  <div class="text-sm font-medium text-foreground">
+                    启用内置工具
+                  </div>
                   <div class="mt-1 text-xs text-muted-foreground">
                     允许模型调用系统内置工具
                   </div>
                 </div>
-                <a-switch v-model:checked="enableBuiltinTools" size="small" />
+                <ASwitch v-model:checked="enableBuiltinTools" size="small" />
               </div>
             </div>
             <div class="md:col-span-2">
-              <div class="flex items-center justify-between gap-4 rounded-xl border border-border bg-card/70 px-4 py-3">
+              <div
+                class="flex items-center justify-between gap-4 rounded-xl border border-border bg-card/70 px-4 py-3"
+              >
                 <div class="min-w-0">
-                  <div class="text-sm font-medium text-foreground">并行工具调用</div>
+                  <div class="text-sm font-medium text-foreground">
+                    并行工具调用
+                  </div>
                   <div class="mt-1 text-xs text-muted-foreground">
                     允许模型同时发起多个工具调用
                   </div>
                 </div>
-                <a-switch v-model:checked="parallelToolCalls" size="small" />
+                <ASwitch v-model:checked="parallelToolCalls" size="small" />
               </div>
             </div>
           </div>
         </section>
 
-        <section class="rounded-2xl border border-border bg-background/80 p-4 md:p-5">
-          <div class="mb-4 text-sm font-semibold text-foreground">结构化输出</div>
+        <section
+          class="rounded-2xl border border-border bg-background/80 p-4 md:p-5"
+        >
+          <div class="mb-4 text-sm font-semibold text-foreground">
+            结构化输出
+          </div>
           <div class="grid gap-4">
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Output Mode</span>
-                  <a-tooltip placement="right" title="选择返回内容的输出方式。可选 text、tool、native、prompted，默认 text 最通用。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <span class="text-sm font-medium text-foreground"
+                    >Output Mode</span
+                  >
+                  <a-tooltip
+                    placement="right"
+                    title="选择返回内容的输出方式。可选 text、tool、native、prompted，默认 text 最通用。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
@@ -2723,9 +2882,17 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Output Schema Name</span>
-                  <a-tooltip placement="right" title="给结构化输出起一个名字，便于区分不同格式；该项可选。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <span class="text-sm font-medium text-foreground"
+                    >Output Schema Name</span
+                  >
+                  <a-tooltip
+                    placement="right"
+                    title="给结构化输出起一个名字，便于区分不同格式；该项可选。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
@@ -2737,9 +2904,17 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Output Schema Description</span>
-                  <a-tooltip placement="right" title="简要说明这份结构化输出想表达什么；该项可选。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <span class="text-sm font-medium text-foreground"
+                    >Output Schema Description</span
+                  >
+                  <a-tooltip
+                    placement="right"
+                    title="简要说明这份结构化输出想表达什么；该项可选。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
@@ -2751,82 +2926,124 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Output Schema</span>
-                  <a-tooltip placement="right" title="需要结构化返回时填写 JSON Schema，不需要可留空。这里填写的是 JSON Schema 对象。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <span class="text-sm font-medium text-foreground"
+                    >Output Schema</span
+                  >
+                  <a-tooltip
+                    placement="right"
+                    title="需要结构化返回时填写 JSON Schema，不需要可留空。这里填写的是 JSON Schema 对象。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
               <a-textarea
                 v-model:value="outputSchema"
                 :auto-size="{ minRows: 3, maxRows: 8 }"
-                placeholder="{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{&quot;answer&quot;:{&quot;type&quot;:&quot;string&quot;}}}"
+                placeholder='{"type":"object","properties":{"answer":{"type":"string"}}}'
               />
             </div>
           </div>
         </section>
 
-        <section class="rounded-2xl border border-border bg-background/80 p-4 md:p-5">
+        <section
+          class="rounded-2xl border border-border bg-background/80 p-4 md:p-5"
+        >
           <div class="mb-4 text-sm font-semibold text-foreground">请求透传</div>
           <div class="grid gap-4">
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">停止序列</span>
-                  <a-tooltip placement="right" title="当生成到这些内容时立即停止，适合截断特定格式。这里填写的是 JSON 数组。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <span class="text-sm font-medium text-foreground"
+                    >停止序列</span
+                  >
+                  <a-tooltip
+                    placement="right"
+                    title="当生成到这些内容时立即停止，适合截断特定格式。这里填写的是 JSON 数组。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
               <a-textarea
                 v-model:value="stopSequences"
                 :auto-size="{ minRows: 2, maxRows: 4 }"
-                :placeholder="STOP_SEQUENCES_PLACEHOLDER"
+                placeholder='["</thinking>"]'
               />
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Extra Headers</span>
-                  <a-tooltip placement="right" title="额外附加到模型请求中的请求头，通常用于特殊网关。这里填写的是 JSON 对象。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <span class="text-sm font-medium text-foreground"
+                    >Extra Headers</span
+                  >
+                  <a-tooltip
+                    placement="right"
+                    title="额外附加到模型请求中的请求头，通常用于特殊网关。这里填写的是 JSON 对象。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
               <a-textarea
                 v-model:value="extraHeaders"
                 :auto-size="{ minRows: 2, maxRows: 4 }"
-                :placeholder="EXTRA_HEADERS_PLACEHOLDER"
+                placeholder='{"x-trace-id":"chat-demo"}'
               />
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Extra Body</span>
-                  <a-tooltip placement="right" title="透传额外请求体字段，适合补充模型专属参数。这里填写的是 JSON 内容。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <span class="text-sm font-medium text-foreground"
+                    >Extra Body</span
+                  >
+                  <a-tooltip
+                    placement="right"
+                    title="透传额外请求体字段，适合补充模型专属参数。这里填写的是 JSON 内容。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
               <a-textarea
                 v-model:value="extraBody"
                 :auto-size="{ minRows: 2, maxRows: 5 }"
-                :placeholder="EXTRA_BODY_PLACEHOLDER"
+                placeholder='{"reasoning":{"effort":"medium"}}'
               />
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Logit Bias</span>
-                  <a-tooltip placement="right" title="用来提高或压低特定 token 的出现概率，适合高级控制。这里填写的是 JSON 对象。">
-                    <IconifyIcon class="text-muted-foreground" icon="mdi:help-circle-outline" />
+                  <span class="text-sm font-medium text-foreground"
+                    >Logit Bias</span
+                  >
+                  <a-tooltip
+                    placement="right"
+                    title="用来提高或压低特定 token 的出现概率，适合高级控制。这里填写的是 JSON 对象。"
+                  >
+                    <IconifyIcon
+                      class="text-muted-foreground"
+                      icon="mdi:help-circle-outline"
+                    />
                   </a-tooltip>
                 </span>
               </div>
               <a-textarea
                 v-model:value="logitBias"
                 :auto-size="{ minRows: 2, maxRows: 4 }"
-                :placeholder="LOGIT_BIAS_PLACEHOLDER"
+                placeholder='{"198":-100}'
               />
             </div>
           </div>
@@ -2835,299 +3052,3 @@ onBeforeUnmount(() => {
     </SettingsModal>
   </Page>
 </template>
-
-<style scoped>
-.ai-markdown :deep(*) {
-  color: inherit;
-}
-
-.ai-markdown :deep(p) {
-  margin: 0;
-}
-
-.ai-markdown :deep(p + p),
-.ai-markdown :deep(ul + p),
-.ai-markdown :deep(ol + p),
-.ai-markdown :deep(p + ul),
-.ai-markdown :deep(p + ol),
-.ai-markdown :deep(pre + p),
-.ai-markdown :deep(p + pre),
-.ai-markdown :deep(blockquote + p),
-.ai-markdown :deep(p + blockquote) {
-  margin-top: 10px;
-}
-
-.ai-markdown :deep(pre) {
-  padding: 12px 14px;
-  overflow-x: auto;
-  background: hsl(var(--background));
-  border: 1px solid hsl(var(--border));
-  border-radius: calc(var(--radius) - 2px);
-}
-
-.ai-markdown :deep(blockquote) {
-  padding-left: 12px;
-  margin: 10px 0 0;
-  color: hsl(var(--muted-foreground));
-  border-left: 3px solid hsl(var(--border));
-}
-
-.ai-markdown :deep(code):not(pre code) {
-  padding: 2px 6px;
-  background: hsl(var(--background));
-  border-radius: 6px;
-}
-
-.ai-markdown :deep(ul),
-.ai-markdown :deep(ol) {
-  padding-left: 20px;
-  margin: 10px 0 0;
-}
-
-.ai-markdown :deep(li + li) {
-  margin-top: 4px;
-}
-
-.ai-composer {
-  position: relative;
-}
-
-.ai-composer__shell {
-  overflow: hidden;
-  background:
-    radial-gradient(
-      circle at top left,
-      hsl(var(--accent) / 18%),
-      transparent 30%
-    ),
-    linear-gradient(180deg, hsl(var(--background)), hsl(var(--card)));
-  border: 1px solid hsl(var(--border));
-  border-radius: 12px;
-  box-shadow:
-    0 18px 40px -32px rgb(15 23 42 / 45%),
-    0 2px 10px 0 rgb(15 23 42 / 8%);
-}
-
-.ai-composer__resize-handle {
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 20px;
-  touch-action: none;
-  cursor: ns-resize;
-  transform: translateY(-50%);
-}
-
-.ai-composer__resize-grip {
-  width: 28px;
-  height: 4px;
-  background: hsl(var(--border));
-  border-radius: 9999px;
-  box-shadow: 0 0 0 4px hsl(var(--card));
-  transition:
-    background-color 0.2s ease,
-    transform 0.2s ease;
-}
-
-.ai-composer__resize-handle:hover .ai-composer__resize-grip,
-.ai-composer__resize-handle--dragging .ai-composer__resize-grip {
-  background: hsl(var(--primary));
-  transform: scaleX(1.08);
-}
-
-.ai-composer__textarea {
-  display: block;
-  width: 100%;
-  min-height: 56px;
-  max-height: none;
-  padding: 18px 20px 6px;
-  overflow-y: auto;
-  font-size: 14px;
-  line-height: 1.7;
-  color: hsl(var(--foreground));
-  appearance: none;
-  resize: none;
-  outline: none;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-}
-
-.ai-composer__textarea::placeholder {
-  color: hsl(var(--muted-foreground) / 68%);
-}
-
-.ai-composer__textarea::-webkit-resizer,
-.ai-composer__textarea::-webkit-scrollbar-corner {
-  display: none;
-}
-
-.ai-composer__footer {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 44px;
-  padding: 6px 12px 10px;
-}
-
-.ai-composer__tools {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
-}
-
-.ai-composer__tool {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  color: hsl(var(--muted-foreground));
-  background: transparent;
-  border: 0;
-  border-radius: 9999px;
-  transition:
-    color 0.2s ease,
-    background-color 0.2s ease;
-}
-
-.ai-composer__tool:hover:not(:disabled) {
-  color: hsl(var(--foreground));
-  background: hsl(var(--accent) / 65%);
-}
-
-.ai-composer__tool:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
-.ai-composer__tool--active {
-  color: hsl(var(--primary));
-}
-
-.ai-message__actions {
-  visibility: hidden;
-  pointer-events: none;
-  opacity: 0;
-  transform: translateY(-2px);
-  transition:
-    opacity 0.18s ease,
-    visibility 0.18s ease,
-    transform 0.18s ease;
-}
-
-.ai-message:hover .ai-message__actions,
-.ai-message:focus-within .ai-message__actions {
-  visibility: visible;
-  pointer-events: auto;
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.ai-thinking-panel {
-  border: 1px solid rgb(245 158 11 / 0.2);
-  background:
-    linear-gradient(180deg, rgb(245 158 11 / 0.08), rgb(245 158 11 / 0.03)),
-    hsl(var(--background));
-  border-radius: 12px;
-}
-
-.ai-thinking-panel--open {
-  background:
-    linear-gradient(180deg, rgb(245 158 11 / 0.12), rgb(245 158 11 / 0.04)),
-    hsl(var(--background));
-}
-
-.ai-thinking-panel__toggle {
-  width: 100%;
-  min-height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  color: rgb(180 83 9);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.4;
-  text-align: left;
-  transition: background-color 0.18s ease;
-}
-
-.ai-thinking-panel__toggle:hover {
-  background: rgb(245 158 11 / 0.06);
-}
-
-.ai-thinking-panel__content {
-  border-top: 1px solid rgb(245 158 11 / 0.14);
-  padding: 12px;
-  color: hsl(var(--muted-foreground));
-  font-size: 13px;
-}
-
-.ai-composer__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  justify-content: flex-end;
-  font-size: 12px;
-  line-height: 1;
-  color: hsl(var(--muted-foreground));
-}
-
-.ai-composer__hint,
-.ai-composer__shortcut {
-  display: inline-flex;
-  align-items: center;
-  line-height: 1;
-}
-
-.ai-composer__hint {
-  max-width: 100%;
-}
-
-@keyframes ai-message-enter {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes ai-status-pulse {
-  0% {
-    box-shadow: 0 0 0 0 hsl(var(--primary) / 28%);
-  }
-
-  70% {
-    box-shadow: 0 0 0 8px hsl(var(--primary) / 0%);
-  }
-
-  100% {
-    box-shadow: 0 0 0 0 hsl(var(--primary) / 0%);
-  }
-}
-
-@media (max-width: 767px) {
-  .ai-composer__footer {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .ai-composer__meta {
-    justify-content: flex-start;
-  }
-}
-</style>
