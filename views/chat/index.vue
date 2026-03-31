@@ -3,11 +3,11 @@ import type {
   ActionsProps,
   BubbleProps,
   ConversationsProps,
-  PromptsClickInfo,
-  PromptsProps,
   SenderProps,
 } from '@antdv-next/x';
 import type { MenuItemType } from 'antdv-next';
+
+import type { FunctionalComponent, VNodeArrayChildren } from 'vue';
 
 import type { ChatMessageItem } from './data';
 
@@ -16,6 +16,7 @@ import type {
   AIChatConversationItem,
   AIChatMessage,
   AIChatParams,
+  AIChatStreamOptions,
   AIMcpResult,
   AIModelResult,
   AIProviderResult,
@@ -24,7 +25,6 @@ import type {
 
 import {
   computed,
-  defineComponent,
   h,
   nextTick,
   onBeforeUnmount,
@@ -49,7 +49,6 @@ import {
   CodeHighlighter,
   Conversations,
   Mermaid,
-  Prompts,
   Sender,
   Think,
   Welcome,
@@ -68,6 +67,7 @@ import {
 } from 'antdv-next';
 
 import {
+  buildChatCompletionRequest,
   clearAIChatConversationMessagesApi,
   deleteAIChatConversationApi,
   deleteAIChatMessageApi,
@@ -78,6 +78,8 @@ import {
   getAllAIQuickPhraseApi,
   getRecentAIChatConversationsApi,
   pinAIChatConversationApi,
+  regenerateAIChatFromMessageApi,
+  regenerateAIChatFromResponseApi,
   streamAIChatApi,
   updateAIChatConversationApi,
   updateAIChatMessageApi,
@@ -163,11 +165,7 @@ const includeThinking = ref(true);
 const reasoningEffort = ref('');
 const enableBuiltinTools = ref(true);
 const selectedMcpIds = ref<number[]>([]);
-const outputMode = ref<'native' | 'prompted' | 'text' | 'tool'>('text');
 const webSearch = ref<'builtin' | 'duckduckgo' | 'tavily'>('builtin');
-const outputSchema = ref('');
-const outputSchemaName = ref('');
-const outputSchemaDescription = ref('');
 const stopSequences = ref('');
 const extraHeaders = ref('');
 const extraBody = ref('');
@@ -335,11 +333,7 @@ function resetAdvancedSettings() {
   reasoningEffort.value = '';
   enableBuiltinTools.value = true;
   selectedMcpIds.value = [];
-  outputMode.value = 'text';
   webSearch.value = 'builtin';
-  outputSchema.value = '';
-  outputSchemaName.value = '';
-  outputSchemaDescription.value = '';
   stopSequences.value = '';
   extraHeaders.value = '';
   extraBody.value = '';
@@ -468,7 +462,33 @@ function findStreamingMessage(data: AIChatMessage) {
   return undefined;
 }
 
-function applyStreamMessage(data: AIChatMessage) {
+function resolveTransientStreamMessageIndex(data: AIChatMessage) {
+  if (data.message_index !== undefined) {
+    return data.message_index;
+  }
+
+  const latestSameRoleStreaming = [...activeMessages.value]
+    .toReversed()
+    .find((item) => item.role === data.role && item.streaming);
+  if (latestSameRoleStreaming) {
+    return latestSameRoleStreaming.message_index;
+  }
+
+  if (data.role === 'thinking') {
+    const latestModel = [...activeMessages.value]
+      .toReversed()
+      .find((item) => item.role === 'model');
+    return latestModel?.message_index;
+  }
+
+  return undefined;
+}
+
+function applyStreamMessage(rawData: AIChatMessage) {
+  const data: AIChatMessage = {
+    ...rawData,
+    message_index: resolveTransientStreamMessageIndex(rawData),
+  };
   const messageContent = resolveChatMessageContent(data);
   const existingConversation = activeConversationId.value
     ? conversations.value.find(
@@ -587,20 +607,7 @@ function toggleMcpSelection(mcpId: number) {
 }
 
 async function handleQuickPhrasePopoverOpenChange(open: boolean) {
-  if (!open) {
-    currentQuickPhrasePopoverRequestId++;
-    quickPhrasePopoverOpen.value = false;
-    return;
-  }
-
-  const requestId = ++currentQuickPhrasePopoverRequestId;
-  await fetchQuickPhrases();
-
-  if (requestId !== currentQuickPhrasePopoverRequestId) {
-    return;
-  }
-
-  quickPhrasePopoverOpen.value = true;
+  quickPhrasePopoverOpen.value = open;
 }
 
 async function fetchModelsByProvider(providerId?: number) {
@@ -818,11 +825,6 @@ async function resendEditedMessage(content: string) {
   }
 
   updateMessageContent(targetMessage, trimmedContent);
-  const nextEditingMessage: ChatMessageItem = {
-    ...targetMessage,
-    content: trimmedContent,
-  };
-  editingMessage.value = nextEditingMessage;
   if (targetMessage.conversation_id) {
     await updateAIChatMessageApi(
       targetMessage.conversation_id,
@@ -832,7 +834,9 @@ async function resendEditedMessage(content: string) {
       },
     );
   }
-  await submitChat(undefined, true, trimmedContent);
+  regeneratingMessageIndex.value = targetMessage.message_index;
+  editingMessage.value = undefined;
+  await submitChat(targetMessage.message_id, true, undefined, 'user');
 }
 
 async function regenerateUserMessage(item: ChatMessageItem) {
@@ -844,10 +848,10 @@ async function regenerateUserMessage(item: ChatMessageItem) {
     return;
   }
 
-  editingMessage.value = item;
-  editingMessageIntent.value = 'resend';
-  regeneratingMessageIndex.value = undefined;
-  await submitChat(undefined, true, item.content);
+  editingMessage.value = undefined;
+  editingMessageIntent.value = 'save';
+  regeneratingMessageIndex.value = item.message_index;
+  await submitChat(item.message_id, true, undefined, 'user');
 }
 
 async function copyMessageContent(item: ChatMessageItem) {
@@ -1037,7 +1041,22 @@ async function deleteMessageChain(item: ChatMessageItem) {
     }
   } else {
     await fetchConversations(false);
-    await loadConversationDetail(activeConversationId.value);
+    const currentConversationId = activeConversationId.value;
+    const stillExists = currentConversationId
+      ? conversations.value.some(
+          (conversation) =>
+            conversation.conversation_id === currentConversationId,
+        )
+      : false;
+
+    if (currentConversationId && stillExists) {
+      await loadConversationDetail(currentConversationId);
+    } else if (conversations.value[0]) {
+      activeConversationId.value = conversations.value[0].conversation_id;
+      await loadConversationDetail(conversations.value[0].conversation_id);
+    } else {
+      createNewConversation();
+    }
   }
 
   message.success('聊天消息已删除');
@@ -1054,13 +1073,14 @@ async function regenerateMessage(item: ChatMessageItem) {
 
   regeneratingMessageIndex.value = item.message_index;
   editingMessage.value = undefined;
-  await submitChat(item.message_id);
+  await submitChat(item.message_id, false, undefined, 'model');
 }
 
 async function submitChat(
   regenerateMessageId?: number,
   notifyInvalid = false,
   overridePromptText?: string,
+  regenerateSource: 'model' | 'user' = 'model',
 ) {
   if (sending.value) {
     return;
@@ -1093,9 +1113,9 @@ async function submitChat(
   }
   const chatMode: AIChatParams['mode'] =
     regenerateMessageId == null
-      ? editingMessageId == null
+      ? (editingMessageId == null
         ? 'create'
-        : 'edit'
+        : 'edit')
       : 'regenerate';
   const submittedTitle =
     activeConversationId.value || !promptText
@@ -1125,16 +1145,6 @@ async function submitChat(
       mcp_ids:
         selectedMcpIds.value.length > 0 ? selectedMcpIds.value : undefined,
       model_id: selectedModelId.value,
-      output_mode: outputMode.value,
-      output_schema: parseJsonField<Record<string, unknown>>(
-        outputSchema.value,
-        '输出 Schema',
-        (value) =>
-          value !== null && typeof value === 'object' && !Array.isArray(value),
-      ),
-      output_schema_description:
-        outputSchemaDescription.value.trim() || undefined,
-      output_schema_name: outputSchemaName.value.trim() || undefined,
       parallel_tool_calls: parallelToolCalls.value,
       presence_penalty: presencePenalty.value,
       provider_id: selectedProviderId.value,
@@ -1164,26 +1174,63 @@ async function submitChat(
     return;
   }
 
-  if (editingMessageIndex !== undefined) {
+  const targetConversationId = activeConversationId.value;
+  if (regenerateMessageId !== undefined && !targetConversationId) {
+    message.warning('当前会话不存在，无法重新生成');
+    return;
+  }
+
+  if (
+    regenerateMessageId !== undefined &&
+    regeneratingMessageIndex.value !== undefined
+  ) {
+    if (regenerateSource === 'user') {
+      activeMessages.value = activeMessages.value.filter(
+        (item) => item.message_index <= regeneratingMessageIndex.value!,
+      );
+    } else {
+      const regenerateTargetArrayIndex = activeMessages.value.findIndex(
+        (item) =>
+          item.role === 'model' &&
+          item.message_index === regeneratingMessageIndex.value,
+      );
+      const preservedUserArrayIndex =
+        regenerateTargetArrayIndex <= 0
+          ? -1
+          : [...activeMessages.value.keys()]
+              .slice(0, regenerateTargetArrayIndex)
+              .toReversed()
+              .find(
+                (index) => activeMessages.value[index]?.role === 'user',
+              ) ?? -1;
+
+      activeMessages.value =
+        preservedUserArrayIndex >= 0
+          ? activeMessages.value.slice(0, preservedUserArrayIndex + 1)
+          : [];
+    }
+  } else if (editingMessageIndex !== undefined) {
     activeMessages.value = activeMessages.value.filter(
       (item) => item.message_index < editingMessageIndex,
-    );
-  } else if (regeneratingMessageIndex.value !== undefined) {
-    activeMessages.value = activeMessages.value.filter(
-      (item) => item.message_index < regeneratingMessageIndex.value!,
     );
   }
 
   if (!activeConversationId.value) {
     draftConversationTitle.value = submittedTitle;
   }
+  const completionRequest = buildChatCompletionRequest({
+    conversationId: targetConversationId,
+    history: activeMessages.value,
+    params: payload,
+    promptText: regenerateMessageId === undefined ? promptText : undefined,
+  });
 
   const streamId = ++currentStreamId;
   abortController?.abort();
   abortController = new AbortController();
   sending.value = true;
   streamError.value = '';
-  if (regenerateMessageId === undefined) {
+  if (regenerateMessageId === undefined || regenerateSource === 'user') {
     prompt.value = '';
   }
   if (
@@ -1195,7 +1242,7 @@ async function submitChat(
   }
   insertStreamingModelSkeleton();
 
-  let streamedConversationId = activeConversationId.value;
+  let streamedConversationId = targetConversationId;
   let streamBuffer = '';
   const handleStreamMessage = (data: AIChatMessage) => {
     if (data.conversation_id) {
@@ -1203,21 +1250,43 @@ async function submitChat(
     }
     applyStreamMessage(data);
   };
+  const streamOptions: AIChatStreamOptions = {
+    signal: abortController.signal,
+    onMessage: (chunk: string) => {
+      if (streamId !== currentStreamId) {
+        return;
+      }
+
+      streamBuffer = consumeBufferedSSEMessages(
+        `${streamBuffer}${chunk}`,
+        handleStreamMessage,
+      );
+    },
+  };
 
   try {
-    await streamAIChatApi(payload, {
-      signal: abortController.signal,
-      onMessage: (chunk) => {
-        if (streamId !== currentStreamId) {
-          return;
-        }
+    if (regenerateMessageId === undefined) {
+      await streamAIChatApi(completionRequest, streamOptions);
+    } else {
+      const regeneratePayload = {
+        forwarded_props: completionRequest.forwarded_props,
+        thread_id: completionRequest.thread_id ?? targetConversationId,
+      };
 
-        streamBuffer = consumeBufferedSSEMessages(
-          `${streamBuffer}${chunk}`,
-          handleStreamMessage,
-        );
-      },
-    });
+      await (regenerateSource === 'user'
+        ? regenerateAIChatFromMessageApi(
+            targetConversationId!,
+            regenerateMessageId,
+            regeneratePayload,
+            streamOptions,
+          )
+        : regenerateAIChatFromResponseApi(
+            targetConversationId!,
+            regenerateMessageId,
+            regeneratePayload,
+            streamOptions,
+          ));
+    }
     streamBuffer = consumeBufferedSSEMessages(
       `${streamBuffer}\n\n`,
       handleStreamMessage,
@@ -1460,11 +1529,7 @@ const hasAdvancedSettings = computed(() => {
     reasoningEffort.value.trim() ||
     enableBuiltinTools.value !== true ||
     selectedMcpIds.value.length > 0 ||
-    outputMode.value !== 'text' ||
     webSearch.value !== 'builtin' ||
-    outputSchema.value.trim() ||
-    outputSchemaName.value.trim() ||
-    outputSchemaDescription.value.trim() ||
     stopSequences.value.trim() ||
     extraHeaders.value.trim() ||
     extraBody.value.trim() ||
@@ -1501,6 +1566,33 @@ const webSearchButtonLabel = computed(() => {
 const senderAutoSize: NonNullable<SenderProps['autoSize']> = {
   maxRows: 6,
   minRows: 2,
+};
+
+const MarkdownPre: FunctionalComponent = (_, { slots }) => {
+  return (slots.default?.() as undefined | VNodeArrayChildren) ?? null;
+};
+
+const MarkdownCode: FunctionalComponent = (_, { attrs, slots }) => {
+  const content = extractMarkdownSlotText(slots.default?.());
+  const language = String(attrs['data-lang'] ?? 'text').toLowerCase();
+  const isBlock = attrs['data-block'] === 'true';
+
+  if (!isBlock) {
+    return h(
+      'code',
+      {
+        class:
+          'rounded bg-muted px-1.5 py-0.5 font-mono text-[0.92em] text-foreground',
+      },
+      slots.default?.() as undefined | VNodeArrayChildren,
+    );
+  }
+
+  if (language === 'mermaid') {
+    return renderMermaidBlock(content);
+  }
+
+  return renderCodeBlock(content, language);
 };
 
 function renderCodeBlock(content: string, language = 'text') {
@@ -1542,76 +1634,28 @@ function extractMarkdownSlotText(value: unknown): string {
   return '';
 }
 
-const MarkdownContent = defineComponent({
-  name: 'ChatMarkdownContent',
-  props: {
-    content: {
-      default: '',
-      type: String,
+function MarkdownContent(props: { content?: string; streaming?: boolean }) {
+  return h(XMarkdown, {
+    className: isDark.value ? 'x-markdown-dark' : 'x-markdown-light',
+    components: {
+      code: MarkdownCode,
+      pre: MarkdownPre,
     },
-    streaming: {
-      default: false,
-      type: Boolean,
+    config: {
+      breaks: true,
+      gfm: true,
     },
-  },
-  setup(props) {
-    const MarkdownPre = defineComponent({
-      name: 'ChatMarkdownPre',
-      setup(_, { slots }) {
-        return () => slots.default?.() || null;
-      },
-    });
-
-    const MarkdownCode = defineComponent({
-      name: 'ChatMarkdownCode',
-      inheritAttrs: false,
-      setup(_, { attrs, slots }) {
-        return () => {
-          const content = extractMarkdownSlotText(slots.default?.());
-          const language = String(attrs['data-lang'] ?? 'text').toLowerCase();
-          const isBlock = attrs['data-block'] === 'true';
-
-          if (!isBlock) {
-            return h(
-              'code',
-              {
-                class:
-                  'rounded bg-muted px-1.5 py-0.5 font-mono text-[0.92em] text-foreground',
-              },
-              slots.default?.(),
-            );
-          }
-
-          if (language === 'mermaid') {
-            return renderMermaidBlock(content);
-          }
-
-          return renderCodeBlock(content, language);
-        };
-      },
-    });
-
-    return () =>
-      h(XMarkdown, {
-        className: isDark.value ? 'x-markdown-dark' : 'x-markdown-light',
-        components: {
-          code: MarkdownCode,
-          pre: MarkdownPre,
-        },
-        config: {
-          breaks: true,
-          gfm: true,
-        },
-        content: props.content,
-        openLinksInNewTab: true,
-        streaming: props.streaming
-          ? {
-              hasNextChunk: true,
-            }
-          : undefined,
-      });
-  },
-});
+    content: props.content ?? '',
+    openLinksInNewTab: true,
+    ...(props.streaming
+      ? {
+          streaming: {
+            hasNextChunk: true,
+          },
+        }
+      : {}),
+  });
+}
 
 function renderConversationLabel(conversation: AIChatConversationItem) {
   return h('div', { class: 'min-w-0 pr-8' }, [
@@ -1680,26 +1724,8 @@ function handleConversationActiveChange(value: number | string) {
   void selectConversation(String(value));
 }
 
-const quickPhrasePromptItems = computed<NonNullable<PromptsProps['items']>>(
-  () => {
-    return quickPhrases.value.map((item) => ({
-      description: item.content,
-      key: item.id,
-      label: item.title,
-    }));
-  },
-);
-
-function handleQuickPhrasePromptClick(info: PromptsClickInfo) {
-  const target = quickPhrases.value.find(
-    (item) => String(item.id) === String(info.data.key),
-  );
-
-  if (!target) {
-    return;
-  }
-
-  appendQuickPhrase(target);
+function handleQuickPhraseSelect(item: AIQuickPhraseResult) {
+  appendQuickPhrase(item);
   quickPhrasePopoverOpen.value = false;
 }
 
@@ -1755,9 +1781,9 @@ function renderMessageAvatar(message: ChatMessageItem): BubbleProps['avatar'] {
   return h(AAvatar, undefined, () => (message.role === 'user' ? '你' : 'AI'));
 }
 
-function confirmDeleteMessageChain(item: ChatMessageItem) {
+function confirmDeleteMessage(item: ChatMessageItem) {
   confirm({
-    content: `确认删除第 ${item.message_index + 1} 条消息及其后续历史吗？`,
+    content: `确认删除第 ${item.message_index + 1} 条消息吗？`,
     icon: 'warning',
   }).then(async () => {
     await deleteMessageChain(item);
@@ -1812,8 +1838,8 @@ function getMessageActionItems(
     danger: true,
     icon: h(IconifyIcon, { class: 'size-3.5', icon: 'mdi:delete-outline' }),
     key: 'delete',
-    label: '删除后续',
-    onItemClick: () => confirmDeleteMessageChain(message),
+    label: '删除消息',
+    onItemClick: () => confirmDeleteMessage(message),
   });
 
   return items;
@@ -2006,91 +2032,132 @@ function renderWebSearchPopoverContent() {
 }
 
 function renderMcpPopoverContent() {
-  if (mcps.value.length === 0) {
-    return h(AEmpty, {
-      description: '暂无可用 MCP',
-      image: null,
-    });
-  }
-
-  return h('div', { class: 'w-[320px] space-y-3' }, [
+  return h('div', { class: 'w-[360px] space-y-3' }, [
     h('div', { class: 'text-xs font-medium text-foreground' }, 'MCP'),
-    h(
-      'div',
-      { class: 'flex max-h-[220px] flex-col gap-2 overflow-y-auto' },
-      mcps.value.map((item) =>
-        h(
-          'button',
+    mcps.value.length === 0
+      ? h(AEmpty, {
+          description: '暂无可用 MCP',
+          image: null,
+        })
+      : h(
+          'div',
           {
-            key: item.id,
-            class: [
-              'flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors',
-              isMcpSelected(item.id)
-                ? 'border-primary/35 bg-primary/10'
-                : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30',
-            ],
-            onClick: () => {
-              toggleMcpSelection(item.id);
-            },
-            title: item.description || item.name,
-            type: 'button',
+            class: 'flex max-h-[260px] flex-col overflow-y-auto',
           },
-          [
+          mcps.value.map((item) =>
             h(
-              'span',
+              'button',
               {
+                key: item.id,
                 class: [
-                  'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px]',
+                  'flex w-full items-center gap-3 rounded-lg border border-border px-3 py-2 text-left transition-colors',
                   isMcpSelected(item.id)
-                    ? 'border-primary bg-primary text-primary-foreground'
-                    : 'border-border bg-background text-transparent',
+                    ? 'bg-primary/10 text-foreground'
+                    : 'hover:border-primary/20 hover:bg-accent/30',
                 ],
-              },
-              '✓',
-            ),
-            h('span', { class: 'min-w-0 flex-1' }, [
-              h(
-                'span',
-                { class: 'block text-xs font-medium text-foreground' },
-                item.name,
-              ),
-              h(
-                'span',
-                {
-                  class:
-                    'mt-1 block truncate text-[11px] text-muted-foreground/75',
+                onClick: () => {
+                  toggleMcpSelection(item.id);
                 },
-                item.description ||
-                  item.command ||
-                  item.url ||
-                  `MCP #${item.id}`,
-              ),
-            ]),
-          ],
+                title: `${item.name} ${item.description || item.command || item.url || `MCP #${item.id}`}`.trim(),
+                type: 'button',
+              },
+              [
+                h('span', { class: 'min-w-0 flex flex-1 items-center gap-3' }, [
+                  h(
+                    'span',
+                    {
+                      class:
+                        'min-w-0 shrink-0 truncate text-xs font-medium text-foreground',
+                    },
+                    item.name,
+                  ),
+                  h(
+                    'span',
+                    {
+                      class:
+                        'min-w-0 flex-1 truncate text-[11px] text-muted-foreground/75',
+                    },
+                    item.description ||
+                      item.command ||
+                      item.url ||
+                      `MCP #${item.id}`,
+                  ),
+                ]),
+                h(
+                  'span',
+                  {
+                    class: [
+                      'inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px]',
+                      isMcpSelected(item.id)
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'border-border bg-background text-transparent',
+                    ],
+                  },
+                  '✓',
+                ),
+              ],
+            ),
+          ),
         ),
-      ),
-    ),
   ]);
 }
 
 function renderQuickPhrasePopoverContent() {
-  return h('div', { class: 'w-[320px]' }, [
-    h('div', { class: 'mb-2 text-xs font-medium text-foreground' }, '快捷短语'),
+  return h('div', { class: 'w-[360px] space-y-3' }, [
+    h('div', { class: 'text-xs font-medium text-foreground' }, '快捷短语'),
     quickPhraseLoading.value
-      ? h(ASpin, { size: 'small' })
-      : quickPhrasePromptItems.value.length > 0
-        ? h('div', { class: 'max-h-[260px] overflow-y-auto' }, [
-            h(Prompts, {
-              items: quickPhrasePromptItems.value,
-              onItemClick: handleQuickPhrasePromptClick,
-              title: '点击插入到输入框',
-              vertical: true,
-            }),
-          ])
-        : h(AEmpty, {
+      ? h(
+          'div',
+          {
+            class:
+              'flex min-h-[120px] items-center justify-center text-muted-foreground',
+          },
+          [h(ASpin, { size: 'small' })],
+        )
+      : (quickPhrases.value.length === 0
+        ? h(AEmpty, {
             description: '暂无快捷短语',
             image: null,
-          }),
+          })
+        : h(
+            'div',
+            {
+              class: 'flex max-h-[260px] min-h-[120px] flex-col overflow-y-auto',
+            },
+            quickPhrases.value.map((item) =>
+              h(
+                'button',
+                {
+                  key: item.id,
+                  class:
+                    'flex w-full items-center gap-3 rounded-lg border border-border px-3 py-2 text-left transition-colors hover:border-primary/20 hover:bg-accent/30',
+                  onClick: () => {
+                    handleQuickPhraseSelect(item);
+                  },
+                  title: `${item.title} ${item.content}`.trim(),
+                  type: 'button',
+                },
+                [
+                  h(
+                    'span',
+                    {
+                      class:
+                        'min-w-0 shrink-0 truncate text-xs font-medium text-foreground',
+                    },
+                    item.title,
+                  ),
+                  h(
+                    'span',
+                    {
+                      class:
+                        'min-w-0 flex-1 truncate text-[11px] text-muted-foreground/75',
+                    },
+                    item.content,
+                  ),
+                ],
+              ),
+            ),
+          )),
   ]);
 }
 
@@ -2131,9 +2198,9 @@ const renderSenderFooter: NonNullable<SenderProps['footer']> = (_, info) => {
                   disabled: sending.value,
                   icon: 'mdi:head-lightbulb-outline',
                   title: includeThinking.value
-                    ? reasoningEffort.value
+                    ? (reasoningEffort.value
                       ? `思考链：${reasoningEffort.value}`
-                      : '思考链已开启'
+                      : '思考链已开启')
                     : '思考链',
                 }),
             },
@@ -2311,6 +2378,7 @@ const [SettingsModal, settingsModalApi] = useVbenModal({
 onMounted(async () => {
   await fetchProviders();
   await fetchMcps();
+  await fetchQuickPhrases();
   await fetchConversations(false);
 
   if (conversations.value[0]) {
@@ -2404,8 +2472,7 @@ onBeforeUnmount(() => {
                     </span>
                     <span
                       class="shrink-0 text-xs leading-none text-muted-foreground"
-                      >&gt;</span
-                    >
+                      >&gt;</span>
                     <a-popover placement="bottomLeft" trigger="click">
                       <template #content>
                         <div class="w-[280px] space-y-3">
@@ -2503,8 +2570,8 @@ onBeforeUnmount(() => {
               <Welcome
                 :description="
                   selectedProviderId && selectedModelId
-                    ? `当前模型：${selectedProviderModelLabel}，发送首条消息后自动创建会话`
-                    : '选择模型后开始对话，历史会自动保存'
+                    ? `当前模型：${selectedProviderModelLabel}`
+                    : '选择供应商和模型后开始对话'
                 "
                 title="开始新的对话"
               />
@@ -2644,9 +2711,7 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Temperature</span
-                  >
+                  <span class="text-sm font-medium text-foreground">Temperature</span>
                   <a-tooltip
                     placement="right"
                     title="控制回答的发散程度，越低越稳定，越高越灵活。取值范围 0 到 2。"
@@ -2692,9 +2757,7 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Max Tokens</span
-                  >
+                  <span class="text-sm font-medium text-foreground">Max Tokens</span>
                   <a-tooltip
                     placement="right"
                     title="限制单次回答长度，可选；不填时由模型自行决定。"
@@ -2715,9 +2778,7 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Timeout</span
-                  >
+                  <span class="text-sm font-medium text-foreground">Timeout</span>
                   <a-tooltip
                     placement="right"
                     title="超过这个时间还没返回结果时，请求会被视为超时，单位为秒。"
@@ -2764,9 +2825,7 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Presence Penalty</span
-                  >
+                  <span class="text-sm font-medium text-foreground">Presence Penalty</span>
                   <a-tooltip
                     placement="right"
                     title="提高后更鼓励模型引入新内容，减少重复话题。取值范围 -2 到 2。"
@@ -2789,9 +2848,7 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Frequency Penalty</span
-                  >
+                  <span class="text-sm font-medium text-foreground">Frequency Penalty</span>
                   <a-tooltip
                     placement="right"
                     title="提高后更少重复相同措辞，适合压制啰嗦输出。取值范围 -2 到 2。"
@@ -2847,119 +2904,12 @@ onBeforeUnmount(() => {
         <section
           class="rounded-2xl border border-border bg-background/80 p-4 md:p-5"
         >
-          <div class="mb-4 text-sm font-semibold text-foreground">
-            结构化输出
-          </div>
-          <div class="grid gap-4">
-            <div class="space-y-2">
-              <div class="flex items-center justify-between gap-3">
-                <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Output Mode</span
-                  >
-                  <a-tooltip
-                    placement="right"
-                    title="选择返回内容的输出方式。可选 text、tool、native、prompted，默认 text 最通用。"
-                  >
-                    <IconifyIcon
-                      class="text-muted-foreground"
-                      icon="mdi:help-circle-outline"
-                    />
-                  </a-tooltip>
-                </span>
-              </div>
-              <a-select
-                v-model:value="outputMode"
-                class="w-full"
-                :options="[
-                  { label: 'text', value: 'text' },
-                  { label: 'tool', value: 'tool' },
-                  { label: 'native', value: 'native' },
-                  { label: 'prompted', value: 'prompted' },
-                ]"
-              />
-            </div>
-            <div class="space-y-2">
-              <div class="flex items-center justify-between gap-3">
-                <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Output Schema Name</span
-                  >
-                  <a-tooltip
-                    placement="right"
-                    title="给结构化输出起一个名字，便于区分不同格式；该项可选。"
-                  >
-                    <IconifyIcon
-                      class="text-muted-foreground"
-                      icon="mdi:help-circle-outline"
-                    />
-                  </a-tooltip>
-                </span>
-              </div>
-              <a-input
-                v-model:value="outputSchemaName"
-                placeholder="结构化输出名称"
-              />
-            </div>
-            <div class="space-y-2">
-              <div class="flex items-center justify-between gap-3">
-                <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Output Schema Description</span
-                  >
-                  <a-tooltip
-                    placement="right"
-                    title="简要说明这份结构化输出想表达什么；该项可选。"
-                  >
-                    <IconifyIcon
-                      class="text-muted-foreground"
-                      icon="mdi:help-circle-outline"
-                    />
-                  </a-tooltip>
-                </span>
-              </div>
-              <a-input
-                v-model:value="outputSchemaDescription"
-                placeholder="结构化输出说明"
-              />
-            </div>
-            <div class="space-y-2">
-              <div class="flex items-center justify-between gap-3">
-                <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Output Schema</span
-                  >
-                  <a-tooltip
-                    placement="right"
-                    title="需要结构化返回时填写 JSON Schema，不需要可留空。这里填写的是 JSON Schema 对象。"
-                  >
-                    <IconifyIcon
-                      class="text-muted-foreground"
-                      icon="mdi:help-circle-outline"
-                    />
-                  </a-tooltip>
-                </span>
-              </div>
-              <a-textarea
-                v-model:value="outputSchema"
-                :auto-size="{ minRows: 3, maxRows: 8 }"
-                placeholder='{"type":"object","properties":{"answer":{"type":"string"}}}'
-              />
-            </div>
-          </div>
-        </section>
-
-        <section
-          class="rounded-2xl border border-border bg-background/80 p-4 md:p-5"
-        >
           <div class="mb-4 text-sm font-semibold text-foreground">请求透传</div>
           <div class="grid gap-4">
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >停止序列</span
-                  >
+                  <span class="text-sm font-medium text-foreground">停止序列</span>
                   <a-tooltip
                     placement="right"
                     title="当生成到这些内容时立即停止，适合截断特定格式。这里填写的是 JSON 数组。"
@@ -2974,15 +2924,13 @@ onBeforeUnmount(() => {
               <a-textarea
                 v-model:value="stopSequences"
                 :auto-size="{ minRows: 2, maxRows: 4 }"
-                placeholder='["</thinking>"]'
+                placeholder="[&quot;</thinking>&quot;]"
               />
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Extra Headers</span
-                  >
+                  <span class="text-sm font-medium text-foreground">Extra Headers</span>
                   <a-tooltip
                     placement="right"
                     title="额外附加到模型请求中的请求头，通常用于特殊网关。这里填写的是 JSON 对象。"
@@ -2997,15 +2945,13 @@ onBeforeUnmount(() => {
               <a-textarea
                 v-model:value="extraHeaders"
                 :auto-size="{ minRows: 2, maxRows: 4 }"
-                placeholder='{"x-trace-id":"chat-demo"}'
+                placeholder="{&quot;x-trace-id&quot;:&quot;chat-demo&quot;}"
               />
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Extra Body</span
-                  >
+                  <span class="text-sm font-medium text-foreground">Extra Body</span>
                   <a-tooltip
                     placement="right"
                     title="透传额外请求体字段，适合补充模型专属参数。这里填写的是 JSON 内容。"
@@ -3020,15 +2966,13 @@ onBeforeUnmount(() => {
               <a-textarea
                 v-model:value="extraBody"
                 :auto-size="{ minRows: 2, maxRows: 5 }"
-                placeholder='{"reasoning":{"effort":"medium"}}'
+                placeholder="{&quot;reasoning&quot;:{&quot;effort&quot;:&quot;medium&quot;}}"
               />
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Logit Bias</span
-                  >
+                  <span class="text-sm font-medium text-foreground">Logit Bias</span>
                   <a-tooltip
                     placement="right"
                     title="用来提高或压低特定 token 的出现概率，适合高级控制。这里填写的是 JSON 对象。"
@@ -3043,7 +2987,7 @@ onBeforeUnmount(() => {
               <a-textarea
                 v-model:value="logitBias"
                 :auto-size="{ minRows: 2, maxRows: 4 }"
-                placeholder='{"198":-100}'
+                placeholder="{&quot;198&quot;:-100}"
               />
             </div>
           </div>

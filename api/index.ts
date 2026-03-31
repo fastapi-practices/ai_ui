@@ -1,5 +1,12 @@
 import type { Recordable } from '@vben/types';
 
+import type {
+  AIChatCompletionRequest,
+  AIChatRegenerateRequest,
+  RawAIConversationDetail,
+  RawAIConversationListItem,
+} from './contracts';
+
 import type { PaginationResult } from '#/types';
 
 import { useAppConfig } from '@vben/hooks';
@@ -7,6 +14,33 @@ import { preferences } from '@vben/preferences';
 import { useAccessStore } from '@vben/stores';
 
 import { requestClient } from '#/api/request';
+
+import {
+  buildChatCompletionRequest,
+  normalizeConversationDetail,
+  normalizeConversationList,
+} from './chat-compat';
+
+export type {
+  AGUIActivityMessage,
+  AGUIAssistantMessage,
+  AGUIBinaryInputContent,
+  AGUIDeveloperMessage,
+  AGUIFunctionCall,
+  AGUIMessage,
+  AGUIReasoningMessage,
+  AGUISystemMessage,
+  AGUITextInputContent,
+  AGUIToolCall,
+  AGUIToolMessage,
+  AGUIUserMessage,
+  AIChatCompletionRequest,
+  AIChatForwardedPropsParam,
+  AIChatRegenerateRequest,
+  RawAIConversationDetail,
+  RawAIConversationListItem,
+} from './contracts';
+export { buildChatCompletionRequest };
 
 export interface AIProviderQueryParams {
   name?: null | string;
@@ -112,10 +146,6 @@ export interface AIChatParams {
   reasoning_effort?: null | string;
   enable_builtin_tools?: boolean;
   mcp_ids?: null | number[];
-  output_mode?: 'native' | 'prompted' | 'text' | 'tool';
-  output_schema?: null | Recordable<any>;
-  output_schema_name?: null | string;
-  output_schema_description?: null | string;
   web_search?: 'builtin' | 'duckduckgo' | 'tavily';
 }
 
@@ -335,59 +365,76 @@ export async function deleteAIMcpApi(pk: number) {
 export async function getRecentAIChatConversationsApi(
   params?: AIChatConversationQueryParams,
 ) {
-  return requestClient.get<AIChatConversationListResult>(
-    '/api/v1/chat/conversations',
-    {
-      params,
-    },
+  const data = await requestClient.get<{
+    has_more: boolean;
+    items: RawAIConversationListItem[];
+    next_cursor?: null | string;
+  }>('/api/v1/conversations', {
+    params,
+  });
+
+  return normalizeConversationList(
+    data.items,
+    data.has_more,
+    data.next_cursor,
   );
 }
 
 export async function getAIChatConversationDetailApi(conversationId: string) {
-  return requestClient.get<AIChatConversationDetail>(
-    `/api/v1/chat/conversations/${conversationId}`,
+  const data = await requestClient.get<RawAIConversationDetail>(
+    `/api/v1/conversations/${conversationId}`,
   );
+
+  return normalizeConversationDetail(data);
 }
 
 export async function updateAIChatConversationApi(
   conversationId: string,
   data: AIChatConversationUpdateParams,
 ) {
-  return requestClient.put(
-    `/api/v1/chat/conversations/${conversationId}`,
-    data,
-  );
+  return requestClient.put(`/api/v1/conversations/${conversationId}`, data);
 }
 
 export async function deleteAIChatConversationApi(conversationId: string) {
-  return requestClient.delete(`/api/v1/chat/conversations/${conversationId}`);
+  return requestClient.delete(`/api/v1/conversations/${conversationId}`);
 }
 
 export async function pinAIChatConversationApi(
   conversationId: string,
   data: AIChatConversationPinParams,
 ) {
-  return requestClient.put(
-    `/api/v1/chat/conversations/${conversationId}/pin`,
-    data,
-  );
+  return requestClient.put(`/api/v1/conversations/${conversationId}/pin`, data);
 }
 
 export async function clearAIChatConversationMessagesApi(
   conversationId: string,
 ) {
-  return requestClient.delete(
-    `/api/v1/chat/conversations/${conversationId}/messages`,
-  );
+  return requestClient.delete(`/api/v1/conversations/${conversationId}/messages`);
 }
 
 export async function deleteAIChatMessageApi(
   conversationId: string,
   messageId: number,
 ) {
-  return requestClient.delete<AIDeleteChatMessageResult>(
-    `/api/v1/chat/conversations/${conversationId}/messages/${messageId}`,
+  const result = await requestClient.delete<
+    AIDeleteChatMessageResult | null | string
+  >(
+    `/api/v1/conversations/${conversationId}/messages/${messageId}`,
   );
+
+  if (
+    result &&
+    typeof result === 'object' &&
+    'deleted_conversation' in result &&
+    'remaining_message_count' in result
+  ) {
+    return result as AIDeleteChatMessageResult;
+  }
+
+  return {
+    deleted_conversation: false,
+    remaining_message_count: 0,
+  } satisfies AIDeleteChatMessageResult;
 }
 
 export async function updateAIChatMessageApi(
@@ -396,7 +443,7 @@ export async function updateAIChatMessageApi(
   data: AIChatMessageUpdateParams,
 ) {
   return requestClient.put(
-    `/api/v1/chat/conversations/${conversationId}/messages/${messageId}`,
+    `/api/v1/conversations/${conversationId}/messages/${messageId}`,
     data,
   );
 }
@@ -435,13 +482,14 @@ export async function deleteAIQuickPhraseApi(pk: number) {
   return requestClient.delete(`/api/v1/quick-phrases/${pk}`);
 }
 
-export async function streamAIChatApi(
-  data: AIChatParams,
+async function postAIChatSSE(
+  url: string,
+  data: AIChatCompletionRequest | AIChatRegenerateRequest,
   options: AIChatStreamOptions,
 ) {
   const accessStore = useAccessStore();
-  const response = await fetch(joinApiUrl(apiURL, '/api/v1/chat/completions'), {
-    method: 'POST',
+  const response = await fetch(joinApiUrl(apiURL, url), {
+    body: JSON.stringify(data),
     headers: {
       Accept: 'text/event-stream, application/json',
       Authorization: accessStore.accessToken
@@ -450,7 +498,7 @@ export async function streamAIChatApi(
       'Accept-Language': preferences.app.locale,
       'Content-Type': 'application/json;charset=utf-8',
     },
-    body: JSON.stringify(data),
+    method: 'POST',
     signal: options.signal,
   });
 
@@ -478,4 +526,37 @@ export async function streamAIChatApi(
 
     options.onMessage(decoder.decode(value, { stream: true }));
   }
+}
+
+export async function streamAIChatApi(
+  data: AIChatCompletionRequest,
+  options: AIChatStreamOptions,
+) {
+  return postAIChatSSE('/api/v1/chat/completions', data, options);
+}
+
+export async function regenerateAIChatFromMessageApi(
+  conversationId: string,
+  messageId: number,
+  data: AIChatRegenerateRequest,
+  options: AIChatStreamOptions,
+) {
+  return postAIChatSSE(
+    `/api/v1/conversations/${conversationId}/messages/${messageId}/regenerate`,
+    data,
+    options,
+  );
+}
+
+export async function regenerateAIChatFromResponseApi(
+  conversationId: string,
+  messageId: number,
+  data: AIChatRegenerateRequest,
+  options: AIChatStreamOptions,
+) {
+  return postAIChatSSE(
+    `/api/v1/conversations/${conversationId}/responses/${messageId}/regenerate`,
+    data,
+    options,
+  );
 }
