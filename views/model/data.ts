@@ -8,11 +8,48 @@ import { h } from 'vue';
 
 import { $t } from '@vben/locales';
 
-import { getAllAIProviderApi } from '#/plugins/ai/api';
 import { DictEnum, getDictOptions } from '#/utils/dict';
 
-async function providerSelectApi() {
-  return await getAllAIProviderApi();
+export const PROVIDER_TYPE_OPTIONS = [
+  { label: 'OpenAI', value: 0 },
+  { label: 'Anthropic', value: 1 },
+  { label: 'Google', value: 2 },
+  { label: 'xAI', value: 3 },
+  { label: 'OpenRouter', value: 4 },
+];
+
+export const PROVIDER_TYPE_TAG_OPTIONS = [
+  { color: 'processing', label: 'OpenAI', value: 0 },
+  { color: 'purple', label: 'Anthropic', value: 1 },
+  { color: 'success', label: 'Google', value: 2 },
+  { color: 'warning', label: 'xAI', value: 3 },
+  { color: 'geekblue', label: 'OpenRouter', value: 4 },
+];
+
+export const SYNCABLE_PROVIDER_TYPES = new Set([0, 3, 4]);
+
+export function buildProviderNameMap(providers: AIProviderResult[]) {
+  return new Map(providers.map((item) => [item.id, item.name]));
+}
+
+export function pickActiveProviderId(
+  providers: AIProviderResult[],
+  currentId?: number,
+): number | undefined {
+  if (providers.length === 0) {
+    return undefined;
+  }
+  if (currentId && providers.some((item) => item.id === currentId)) {
+    return currentId;
+  }
+  return providers[0]?.id;
+}
+
+export function getProviderTypeLabel(type: number) {
+  return (
+    PROVIDER_TYPE_OPTIONS.find((item) => item.value === type)?.label ??
+    `Type ${type}`
+  );
 }
 
 export function useModelColumns(
@@ -76,28 +113,34 @@ export function useModelColumns(
   ];
 }
 
-export const modelSchema: VbenFormSchema[] = [
+export const providerSchema: VbenFormSchema[] = [
   {
-    component: 'ApiSelect',
+    component: 'Input',
+    fieldName: 'name',
+    label: '供应商名称',
+    rules: 'required',
+  },
+  {
+    component: 'Select',
     componentProps: {
-      allowClear: true,
-      api: providerSelectApi,
-      afterFetch: (data: AIProviderResult[]) => {
-        return data.map((item) => ({
-          label: item.name,
-          value: item.id,
-        }));
-      },
       class: 'w-full',
+      options: PROVIDER_TYPE_OPTIONS,
     },
-    fieldName: 'provider_id',
-    label: '供应商',
+    defaultValue: 0,
+    fieldName: 'type',
+    label: '供应商类型',
     rules: 'required',
   },
   {
     component: 'Input',
-    fieldName: 'model_id',
-    label: '模型 ID',
+    fieldName: 'api_host',
+    label: 'API Host',
+    rules: 'required',
+  },
+  {
+    component: 'InputPassword',
+    fieldName: 'api_key',
+    label: 'API Key',
     rules: 'required',
   },
   {
@@ -119,23 +162,63 @@ export const modelSchema: VbenFormSchema[] = [
   },
 ];
 
-export const queryModelSchema: VbenFormSchema[] = [
+export const queryProviderSchema: VbenFormSchema[] = [
   {
-    component: 'ApiSelect',
+    component: 'Input',
+    fieldName: 'name',
+    label: '供应商名称',
+  },
+  {
+    component: 'Select',
     componentProps: {
       allowClear: true,
-      api: providerSelectApi,
-      afterFetch: (data: AIProviderResult[]) => {
-        return data.map((item) => ({
-          label: item.name,
-          value: item.id,
-        }));
-      },
-      class: 'w-full',
+      options: PROVIDER_TYPE_OPTIONS,
     },
-    fieldName: 'provider_id',
-    label: '供应商',
+    fieldName: 'type',
+    label: '供应商类型',
   },
+  {
+    component: 'Select',
+    componentProps: {
+      allowClear: true,
+      options: getDictOptions(DictEnum.SYS_STATUS),
+    },
+    fieldName: 'status',
+    label: '状态',
+  },
+];
+
+export function createModelSchema(): VbenFormSchema[] {
+  return [
+    {
+      component: 'Input',
+      fieldName: 'model_id',
+      label: '模型 ID',
+      rules: 'required',
+    },
+    {
+      component: 'RadioGroup',
+      componentProps: {
+        buttonStyle: 'solid',
+        options: getDictOptions(DictEnum.SYS_STATUS),
+        optionType: 'button',
+      },
+      defaultValue: 1,
+      fieldName: 'status',
+      label: '状态',
+      rules: 'required',
+    },
+    {
+      component: 'Textarea',
+      fieldName: 'remark',
+      label: '备注',
+    },
+  ];
+}
+
+export const modelSchema = createModelSchema();
+
+export const queryModelSchema: VbenFormSchema[] = [
   {
     component: 'Input',
     fieldName: 'model_id',

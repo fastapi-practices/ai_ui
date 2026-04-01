@@ -1,183 +1,57 @@
 <script setup lang="ts">
-import type { VbenFormProps } from '#/adapter/form';
-import type {
-  OnActionClickParams,
-  VxeTableGridOptions,
-} from '#/adapter/vxe-table';
-import type {
-  AIModelParams,
-  AIModelResult,
-  AIProviderResult,
-} from '#/plugins/ai/api';
+import type { AIProviderResult } from '#/plugins/ai/api';
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, ref } from 'vue';
 
-import { Page, useVbenModal, VbenButton } from '@vben/common-ui';
-import { MaterialSymbolsAdd } from '@vben/icons';
-import { $t } from '@vben/locales';
+import { ColPage } from '@vben/common-ui';
 
-import { message } from 'antdv-next';
-
-import { useVbenForm } from '#/adapter/form';
-import { useVbenVxeGrid } from '#/adapter/vxe-table';
-import {
-  createAIModelApi,
-  deleteAIModelApi,
-  getAIModelListApi,
-  getAllAIProviderApi,
-  updateAIModelApi,
-} from '#/plugins/ai/api';
-
-import { modelSchema, queryModelSchema, useModelColumns } from './data';
+import ModelPane from './components/model-pane.vue';
+import ProviderPane from './components/provider-pane.vue';
+import { buildProviderNameMap, pickActiveProviderId } from './data';
 
 const providers = ref<AIProviderResult[]>([]);
-const providerNameMap = ref(new Map<number, string>());
+const activeProviderId = ref<number>();
 
-async function fetchProviders() {
-  const data = await getAllAIProviderApi();
-  providers.value = data;
-  providerNameMap.value = new Map(
-    data.map((item) => [item.id, item.name]),
+const providerNameMap = computed(() => buildProviderNameMap(providers.value));
+const activeProvider = computed(() => {
+  return providers.value.find((item) => item.id === activeProviderId.value);
+});
+
+function handleProvidersChange(nextProviders: AIProviderResult[]) {
+  providers.value = nextProviders;
+  activeProviderId.value = pickActiveProviderId(
+    nextProviders,
+    activeProviderId.value,
   );
 }
 
-const formOptions: VbenFormProps = {
-  collapsed: true,
-  showCollapseButton: true,
-  submitButtonOptions: {
-    content: $t('common.form.query'),
-  },
-  schema: queryModelSchema,
-};
-
-const gridOptions: VxeTableGridOptions<AIModelResult> = {
-  rowConfig: {
-    keyField: 'id',
-  },
-  checkboxConfig: {
-    highlight: true,
-  },
-  height: 'auto',
-  exportConfig: {},
-  printConfig: {},
-  toolbarConfig: {
-    custom: true,
-    refresh: true,
-    refreshOptions: {
-      code: 'query',
-    },
-    zoom: true,
-  },
-  columns: useModelColumns(providerNameMap, onActionClick),
-  proxyConfig: {
-    ajax: {
-      query: async ({ page }, formValues) => {
-        return await getAIModelListApi({
-          ...formValues,
-          page: page.currentPage,
-          size: page.pageSize,
-        });
-      },
-    },
-  },
-};
-
-const [Grid, gridApi] = useVbenVxeGrid({
-  formOptions,
-  gridOptions,
-});
-
-function onRefresh() {
-  gridApi.query();
+function handleProviderSelect(providerId: number) {
+  activeProviderId.value = providerId;
 }
-
-function onActionClick({ code, row }: OnActionClickParams<AIModelResult>) {
-  switch (code) {
-    case 'delete': {
-      deleteAIModelApi([row.id]).then(() => {
-        message.success({
-          content: $t('ui.actionMessage.deleteSuccess', [row.model_id]),
-          key: 'action_process_msg',
-        });
-        onRefresh();
-      });
-      break;
-    }
-    case 'edit': {
-      modalApi.setData(row).open();
-      break;
-    }
-  }
-}
-
-const [Form, formApi] = useVbenForm({
-  layout: 'vertical',
-  showDefaultActions: false,
-  schema: modelSchema,
-});
-
-const formData = ref<AIModelResult>();
-
-const modalTitle = computed(() => {
-  return formData.value?.id
-    ? $t('ui.actionTitle.edit', ['模型'])
-    : $t('ui.actionTitle.create', ['模型']);
-});
-
-const [Modal, modalApi] = useVbenModal({
-  destroyOnClose: true,
-  async onConfirm() {
-    const { valid } = await formApi.validate();
-    if (!valid) {
-      return;
-    }
-
-    modalApi.lock();
-    const data = await formApi.getValues<AIModelParams>();
-
-    try {
-      await (formData.value?.id
-        ? updateAIModelApi(formData.value.id, data)
-        : createAIModelApi(data));
-      message.success($t('ui.actionMessage.operationSuccess'));
-      await modalApi.close();
-      await fetchProviders();
-      onRefresh();
-    } finally {
-      modalApi.unlock();
-    }
-  },
-  onOpenChange(isOpen) {
-    if (isOpen) {
-      const data = modalApi.getData<AIModelResult>();
-      formApi.resetForm();
-      if (data) {
-        formData.value = data;
-        formApi.setValues(data);
-      } else {
-        formData.value = undefined;
-      }
-    }
-  },
-});
-
-onMounted(async () => {
-  await fetchProviders();
-});
 </script>
 
 <template>
-  <Page auto-content-height>
-    <Grid>
-      <template #toolbar-actions>
-        <VbenButton @click="() => modalApi.setData(null).open()">
-          <MaterialSymbolsAdd class="size-5" />
-          新增模型
-        </VbenButton>
-      </template>
-    </Grid>
-    <Modal :title="modalTitle">
-      <Form />
-    </Modal>
-  </Page>
+  <ColPage
+    auto-content-height
+    content-class="h-full"
+    :left-width="20"
+    :resizable="false"
+    :right-width="80"
+  >
+    <template #left>
+      <div class="mr-2 h-full">
+        <ProviderPane
+          :active-provider-id="activeProviderId"
+          @providers-change="handleProvidersChange"
+          @select="handleProviderSelect"
+        />
+      </div>
+    </template>
+
+    <ModelPane
+      :key="activeProviderId ?? 'empty'"
+      :provider="activeProvider"
+      :provider-name-map="providerNameMap"
+    />
+  </ColPage>
 </template>

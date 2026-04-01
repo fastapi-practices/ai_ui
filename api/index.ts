@@ -283,7 +283,7 @@ export async function getAllAIProviderApi() {
 }
 
 export async function createAIProviderApi(data: AIProviderParams) {
-  return requestClient.post('/api/v1/providers', data);
+  return requestClient.post<AIProviderResult>('/api/v1/providers', data);
 }
 
 export async function updateAIProviderApi(pk: number, data: AIProviderParams) {
@@ -373,11 +373,7 @@ export async function getRecentAIChatConversationsApi(
     params,
   });
 
-  return normalizeConversationList(
-    data.items,
-    data.has_more,
-    data.next_cursor,
-  );
+  return normalizeConversationList(data.items, data.has_more, data.next_cursor);
 }
 
 export async function getAIChatConversationDetailApi(conversationId: string) {
@@ -409,7 +405,9 @@ export async function pinAIChatConversationApi(
 export async function clearAIChatConversationMessagesApi(
   conversationId: string,
 ) {
-  return requestClient.delete(`/api/v1/conversations/${conversationId}/messages`);
+  return requestClient.delete(
+    `/api/v1/conversations/${conversationId}/messages`,
+  );
 }
 
 export async function deleteAIChatMessageApi(
@@ -418,9 +416,7 @@ export async function deleteAIChatMessageApi(
 ) {
   const result = await requestClient.delete<
     AIDeleteChatMessageResult | null | string
-  >(
-    `/api/v1/conversations/${conversationId}/messages/${messageId}`,
-  );
+  >(`/api/v1/conversations/${conversationId}/messages/${messageId}`);
 
   if (
     result &&

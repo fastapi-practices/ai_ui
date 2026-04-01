@@ -2,7 +2,7 @@
   "menu": "AI",
   "chat": "AI Chat",
   "provider": "Provider",
-  "model": "Model",
+  "model": "Providers & Models",
   "mcp": "MCP",
   "quick_phrase": "Quick Phrase"
 }

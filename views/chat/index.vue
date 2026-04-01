@@ -33,7 +33,7 @@ import {
   watch,
 } from 'vue';
 
-import { confirm, Page, useVbenModal, VbenButton } from '@vben/common-ui';
+import { ColPage, confirm, useVbenModal, VbenButton } from '@vben/common-ui';
 import {
   IconifyIcon,
   MaterialSymbolsDelete,
@@ -240,7 +240,6 @@ const REASONING_EFFORT_OPTIONS: Array<{
 let currentModelFetchId = 0;
 let currentConversationFetchId = 0;
 let currentStreamId = 0;
-let currentQuickPhrasePopoverRequestId = 0;
 let abortController: AbortController | undefined;
 
 function upsertConversation(summary: AIChatConversationItem) {
@@ -1113,9 +1112,9 @@ async function submitChat(
   }
   const chatMode: AIChatParams['mode'] =
     regenerateMessageId == null
-      ? (editingMessageId == null
+      ? editingMessageId == null
         ? 'create'
-        : 'edit')
+        : 'edit'
       : 'regenerate';
   const submittedTitle =
     activeConversationId.value || !promptText
@@ -1197,12 +1196,11 @@ async function submitChat(
       const preservedUserArrayIndex =
         regenerateTargetArrayIndex <= 0
           ? -1
-          : [...activeMessages.value.keys()]
+          : ([...activeMessages.value.keys()]
               .slice(0, regenerateTargetArrayIndex)
               .toReversed()
-              .find(
-                (index) => activeMessages.value[index]?.role === 'user',
-              ) ?? -1;
+              .find((index) => activeMessages.value[index]?.role === 'user') ??
+            -1);
 
       activeMessages.value =
         preservedUserArrayIndex >= 0
@@ -1748,11 +1746,48 @@ function getMessageMarkdownContent(
   return String(content ?? '');
 }
 
+function getMessageBubbleClasses(
+  message: ChatMessageItem,
+): BubbleProps['classes'] | undefined {
+  if (!message.is_error) {
+    return undefined;
+  }
+
+  return {
+    body: 'w-full',
+    content:
+      '!border !border-destructive/20 !bg-destructive/6 !text-destructive !shadow-none',
+  };
+}
+
 function getMessageContentRender(
   message: ChatMessageItem,
 ): BubbleProps['contentRender'] {
   return (content) => {
     const text = getMessageMarkdownContent(message, content);
+
+    if (message.is_error) {
+      return h('div', { class: 'space-y-2' }, [
+        h(
+          'div',
+          {
+            class:
+              'text-sm leading-6 whitespace-pre-wrap break-words text-destructive',
+          },
+          text,
+        ),
+        message.conversation_id
+          ? h(
+              'div',
+              {
+                class:
+                  'border-t border-destructive/20 pt-2 text-xs leading-5 whitespace-pre-wrap break-all text-destructive/80',
+              },
+              ['对话 ID: ', message.conversation_id],
+            )
+          : null,
+      ]);
+    }
 
     return h(MarkdownContent, {
       content: text,
@@ -1853,34 +1888,7 @@ function renderMessageFooter(message: ChatMessageItem) {
 }
 
 function renderMessageExtra(message: ChatMessageItem) {
-  if (
-    !message.is_error ||
-    (!message.conversation_id &&
-      (!message.error_message || message.error_message === message.content))
-  ) {
-    return undefined;
-  }
-
-  const children = [];
-
-  if (message.error_message && message.error_message !== message.content) {
-    children.push(message.error_message);
-  }
-
-  if (message.conversation_id) {
-    children.push(
-      h('div', { class: children.length > 0 ? 'mt-1' : undefined }, [
-        '对话 ID: ',
-        message.conversation_id,
-      ]),
-    );
-  }
-
-  return h(
-    'div',
-    { class: 'text-xs leading-6 whitespace-pre-wrap text-destructive/90' },
-    children,
-  );
+  return undefined;
 }
 
 function renderFooterIconButton(options: {
@@ -2058,7 +2066,8 @@ function renderMcpPopoverContent() {
                 onClick: () => {
                   toggleMcpSelection(item.id);
                 },
-                title: `${item.name} ${item.description || item.command || item.url || `MCP #${item.id}`}`.trim(),
+                title:
+                  `${item.name} ${item.description || item.command || item.url || `MCP #${item.id}`}`.trim(),
                 type: 'button',
               },
               [
@@ -2114,7 +2123,7 @@ function renderQuickPhrasePopoverContent() {
           },
           [h(ASpin, { size: 'small' })],
         )
-      : (quickPhrases.value.length === 0
+      : quickPhrases.value.length === 0
         ? h(AEmpty, {
             description: '暂无快捷短语',
             image: null,
@@ -2122,7 +2131,8 @@ function renderQuickPhrasePopoverContent() {
         : h(
             'div',
             {
-              class: 'flex max-h-[260px] min-h-[120px] flex-col overflow-y-auto',
+              class:
+                'flex max-h-[260px] min-h-[120px] flex-col overflow-y-auto',
             },
             quickPhrases.value.map((item) =>
               h(
@@ -2157,7 +2167,7 @@ function renderQuickPhrasePopoverContent() {
                 ],
               ),
             ),
-          )),
+          ),
   ]);
 }
 
@@ -2198,9 +2208,9 @@ const renderSenderFooter: NonNullable<SenderProps['footer']> = (_, info) => {
                   disabled: sending.value,
                   icon: 'mdi:head-lightbulb-outline',
                   title: includeThinking.value
-                    ? (reasoningEffort.value
+                    ? reasoningEffort.value
                       ? `思考链：${reasoningEffort.value}`
-                      : '思考链已开启')
+                      : '思考链已开启'
                     : '思考链',
                 }),
             },
@@ -2395,10 +2405,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <Page auto-content-height content-class="h-full">
-    <div class="grid h-full gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
+  <ColPage
+    auto-content-height
+    content-class="h-full"
+    :left-width="20"
+    :right-width="80"
+  >
+    <template #left>
       <aside
-        class="flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius)] border border-border bg-card"
+        class="mr-2 flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius)] border border-border bg-card"
       >
         <div class="flex-1 overflow-y-auto p-3">
           <ASpin
@@ -2426,10 +2441,11 @@ onBeforeUnmount(() => {
           </template>
         </div>
       </aside>
+    </template>
 
-      <section
-        class="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[var(--radius)] border border-border bg-card"
-      >
+    <section
+      class="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[var(--radius)] border border-border bg-card"
+    >
         <div class="border-b border-border px-5 py-4 md:px-6">
           <div class="flex flex-wrap items-start gap-3">
             <div class="min-w-0 flex-1">
@@ -2472,7 +2488,8 @@ onBeforeUnmount(() => {
                     </span>
                     <span
                       class="shrink-0 text-xs leading-none text-muted-foreground"
-                      >&gt;</span>
+                      >&gt;</span
+                    >
                     <a-popover placement="bottomLeft" trigger="click">
                       <template #content>
                         <div class="w-[280px] space-y-3">
@@ -2619,6 +2636,7 @@ onBeforeUnmount(() => {
                 <template v-if="item.kind === 'message'">
                   <Bubble
                     :avatar="renderMessageAvatar(item.message)"
+                    :classes="getMessageBubbleClasses(item.message)"
                     :content="item.message.content"
                     :content-render="getMessageContentRender(item.message)"
                     :editable="
@@ -2680,8 +2698,7 @@ onBeforeUnmount(() => {
             />
           </div>
         </div>
-      </section>
-    </div>
+    </section>
 
     <SettingsModal content-class="px-4 py-4 md:px-5 md:py-5">
       <div class="space-y-5">
@@ -2711,7 +2728,9 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Temperature</span>
+                  <span class="text-sm font-medium text-foreground"
+                    >Temperature</span
+                  >
                   <a-tooltip
                     placement="right"
                     title="控制回答的发散程度，越低越稳定，越高越灵活。取值范围 0 到 2。"
@@ -2757,7 +2776,9 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Max Tokens</span>
+                  <span class="text-sm font-medium text-foreground"
+                    >Max Tokens</span
+                  >
                   <a-tooltip
                     placement="right"
                     title="限制单次回答长度，可选；不填时由模型自行决定。"
@@ -2778,7 +2799,9 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Timeout</span>
+                  <span class="text-sm font-medium text-foreground"
+                    >Timeout</span
+                  >
                   <a-tooltip
                     placement="right"
                     title="超过这个时间还没返回结果时，请求会被视为超时，单位为秒。"
@@ -2825,7 +2848,9 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Presence Penalty</span>
+                  <span class="text-sm font-medium text-foreground"
+                    >Presence Penalty</span
+                  >
                   <a-tooltip
                     placement="right"
                     title="提高后更鼓励模型引入新内容，减少重复话题。取值范围 -2 到 2。"
@@ -2848,7 +2873,9 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Frequency Penalty</span>
+                  <span class="text-sm font-medium text-foreground"
+                    >Frequency Penalty</span
+                  >
                   <a-tooltip
                     placement="right"
                     title="提高后更少重复相同措辞，适合压制啰嗦输出。取值范围 -2 到 2。"
@@ -2909,7 +2936,9 @@ onBeforeUnmount(() => {
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">停止序列</span>
+                  <span class="text-sm font-medium text-foreground"
+                    >停止序列</span
+                  >
                   <a-tooltip
                     placement="right"
                     title="当生成到这些内容时立即停止，适合截断特定格式。这里填写的是 JSON 数组。"
@@ -2924,13 +2953,15 @@ onBeforeUnmount(() => {
               <a-textarea
                 v-model:value="stopSequences"
                 :auto-size="{ minRows: 2, maxRows: 4 }"
-                placeholder="[&quot;</thinking>&quot;]"
+                placeholder='["</thinking>"]'
               />
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Extra Headers</span>
+                  <span class="text-sm font-medium text-foreground"
+                    >Extra Headers</span
+                  >
                   <a-tooltip
                     placement="right"
                     title="额外附加到模型请求中的请求头，通常用于特殊网关。这里填写的是 JSON 对象。"
@@ -2945,13 +2976,15 @@ onBeforeUnmount(() => {
               <a-textarea
                 v-model:value="extraHeaders"
                 :auto-size="{ minRows: 2, maxRows: 4 }"
-                placeholder="{&quot;x-trace-id&quot;:&quot;chat-demo&quot;}"
+                placeholder='{"x-trace-id":"chat-demo"}'
               />
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Extra Body</span>
+                  <span class="text-sm font-medium text-foreground"
+                    >Extra Body</span
+                  >
                   <a-tooltip
                     placement="right"
                     title="透传额外请求体字段，适合补充模型专属参数。这里填写的是 JSON 内容。"
@@ -2966,13 +2999,15 @@ onBeforeUnmount(() => {
               <a-textarea
                 v-model:value="extraBody"
                 :auto-size="{ minRows: 2, maxRows: 5 }"
-                placeholder="{&quot;reasoning&quot;:{&quot;effort&quot;:&quot;medium&quot;}}"
+                placeholder='{"reasoning":{"effort":"medium"}}'
               />
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground">Logit Bias</span>
+                  <span class="text-sm font-medium text-foreground"
+                    >Logit Bias</span
+                  >
                   <a-tooltip
                     placement="right"
                     title="用来提高或压低特定 token 的出现概率，适合高级控制。这里填写的是 JSON 对象。"
@@ -2987,12 +3022,12 @@ onBeforeUnmount(() => {
               <a-textarea
                 v-model:value="logitBias"
                 :auto-size="{ minRows: 2, maxRows: 4 }"
-                placeholder="{&quot;198&quot;:-100}"
+                placeholder='{"198":-100}'
               />
             </div>
           </div>
         </section>
       </div>
     </SettingsModal>
-  </Page>
+  </ColPage>
 </template>

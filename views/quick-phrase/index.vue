@@ -90,9 +90,7 @@ function onActionClick({
     case 'delete': {
       deleteAIQuickPhraseApi(row.id).then(() => {
         message.success({
-          content: $t('ui.actionMessage.deleteSuccess', [
-            row.title,
-          ]),
+          content: $t('ui.actionMessage.deleteSuccess', [row.title]),
           key: 'action_process_msg',
         });
         onRefresh();

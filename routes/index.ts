@@ -22,15 +22,6 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    name: 'PluginAIProvider',
-    path: '/plugins/ai/provider',
-    component: () => import('#/plugins/ai/views/provider/index.vue'),
-    meta: {
-      title: $t('ai.provider'),
-      icon: 'mdi:hub-outline',
-    },
-  },
-  {
     name: 'PluginAIModel',
     path: '/plugins/ai/model',
     component: () => import('#/plugins/ai/views/model/index.vue'),
