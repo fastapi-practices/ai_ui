@@ -22,9 +22,9 @@ const routes: RouteRecordRaw[] = [
     },
   },
   {
-    name: 'PluginAIModel',
-    path: '/plugins/ai/model',
-    component: () => import('#/plugins/ai/views/model/index.vue'),
+    name: 'PluginAIModelService',
+    path: '/plugins/ai/model-service',
+    component: () => import('#/plugins/ai/views/model-service/index.vue'),
     meta: {
       title: $t('ai.model'),
       icon: 'carbon:model-alt',

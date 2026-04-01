@@ -27,6 +27,7 @@ import {
   computed,
   h,
   nextTick,
+  onActivated,
   onBeforeUnmount,
   onMounted,
   ref,
@@ -133,6 +134,10 @@ const editingMessageIntent = ref<'resend' | 'save'>('save');
 const regeneratingMessageIndex = ref<number>();
 const isRenamingConversation = ref(false);
 const renameTitle = ref('');
+const stopSequencesPlaceholder = '["</thinking>"]';
+const extraHeadersPlaceholder = '{"x-trace-id":"chat-demo"}';
+const extraBodyPlaceholder = '{"reasoning":{"effort":"medium"}}';
+const logitBiasPlaceholder = '{"198":-100}';
 
 const providers = ref<AIProviderResult[]>([]);
 const models = ref<AIModelResult[]>([]);
@@ -241,6 +246,7 @@ let currentModelFetchId = 0;
 let currentConversationFetchId = 0;
 let currentStreamId = 0;
 let abortController: AbortController | undefined;
+let hasInitialized = false;
 
 function upsertConversation(summary: AIChatConversationItem) {
   const index = conversations.value.findIndex(
@@ -640,6 +646,15 @@ async function fetchQuickPhrases() {
   } finally {
     quickPhraseLoading.value = false;
   }
+}
+
+async function refreshChatResources() {
+  await Promise.all([
+    fetchProviders(),
+    fetchModelsByProvider(selectedProviderId.value),
+    fetchMcps(),
+    fetchQuickPhrases(),
+  ]);
 }
 
 async function fetchConversations(append = false) {
@@ -1106,16 +1121,18 @@ async function submitChat(
 
   const editingMessageIndex = editingMessage.value?.message_index;
   const editingMessageId = editingMessage.value?.message_id;
-  if (editingMessage.value && editingMessageId == null) {
+  const hasEditingMessageId =
+    editingMessageId !== undefined && editingMessageId !== null;
+  const submittedPromptText = promptText ?? '';
+
+  if (editingMessage.value && !hasEditingMessageId) {
     message.warning('当前消息暂不可编辑，请刷新后重试');
     return;
   }
-  const chatMode: AIChatParams['mode'] =
-    regenerateMessageId == null
-      ? editingMessageId == null
-        ? 'create'
-        : 'edit'
-      : 'regenerate';
+  let chatMode: AIChatParams['mode'] = 'regenerate';
+  if (regenerateMessageId === undefined) {
+    chatMode = hasEditingMessageId ? 'edit' : 'create';
+  }
   const submittedTitle =
     activeConversationId.value || !promptText
       ? draftConversationTitle.value
@@ -1160,12 +1177,15 @@ async function submitChat(
       timeout: timeout.value,
       top_p: topP.value,
       web_search: webSearch.value,
-      ...(chatMode === 'edit'
-        ? { edit_message_id: editingMessageId, user_prompt: promptText! }
+      ...(chatMode === 'edit' && hasEditingMessageId
+        ? {
+            edit_message_id: editingMessageId,
+            user_prompt: submittedPromptText,
+          }
         : {}),
-      ...(chatMode === 'create' ? { user_prompt: promptText! } : {}),
-      ...(chatMode === 'regenerate'
-        ? { regenerate_message_id: regenerateMessageId! }
+      ...(chatMode === 'create' ? { user_prompt: submittedPromptText } : {}),
+      ...(chatMode === 'regenerate' && regenerateMessageId !== undefined
+        ? { regenerate_message_id: regenerateMessageId }
         : {}),
     };
   } catch (error) {
@@ -1178,20 +1198,21 @@ async function submitChat(
     message.warning('当前会话不存在，无法重新生成');
     return;
   }
+  const regenerateTargetMessageIndex = regeneratingMessageIndex.value;
 
   if (
     regenerateMessageId !== undefined &&
-    regeneratingMessageIndex.value !== undefined
+    regenerateTargetMessageIndex !== undefined
   ) {
     if (regenerateSource === 'user') {
       activeMessages.value = activeMessages.value.filter(
-        (item) => item.message_index <= regeneratingMessageIndex.value!,
+        (item) => item.message_index <= regenerateTargetMessageIndex,
       );
     } else {
       const regenerateTargetArrayIndex = activeMessages.value.findIndex(
         (item) =>
           item.role === 'model' &&
-          item.message_index === regeneratingMessageIndex.value,
+          item.message_index === regenerateTargetMessageIndex,
       );
       const preservedUserArrayIndex =
         regenerateTargetArrayIndex <= 0
@@ -1220,7 +1241,8 @@ async function submitChat(
     conversationId: targetConversationId,
     history: activeMessages.value,
     params: payload,
-    promptText: regenerateMessageId === undefined ? promptText : undefined,
+    promptText:
+      regenerateMessageId === undefined ? submittedPromptText : undefined,
   });
 
   const streamId = ++currentStreamId;
@@ -1233,10 +1255,10 @@ async function submitChat(
   }
   if (
     regenerateMessageId === undefined &&
-    editingMessageId == null &&
-    promptText
+    !hasEditingMessageId &&
+    submittedPromptText
   ) {
-    insertOptimisticUserMessage(promptText);
+    insertOptimisticUserMessage(submittedPromptText);
   }
   insertStreamingModelSkeleton();
 
@@ -1266,20 +1288,25 @@ async function submitChat(
     if (regenerateMessageId === undefined) {
       await streamAIChatApi(completionRequest, streamOptions);
     } else {
+      const regenerateConversationId = targetConversationId;
+      if (!regenerateConversationId) {
+        message.warning('当前会话不存在，无法重新生成');
+        return;
+      }
       const regeneratePayload = {
         forwarded_props: completionRequest.forwarded_props,
-        thread_id: completionRequest.thread_id ?? targetConversationId,
+        thread_id: completionRequest.thread_id ?? regenerateConversationId,
       };
 
       await (regenerateSource === 'user'
         ? regenerateAIChatFromMessageApi(
-            targetConversationId!,
+            regenerateConversationId,
             regenerateMessageId,
             regeneratePayload,
             streamOptions,
           )
         : regenerateAIChatFromResponseApi(
-            targetConversationId!,
+            regenerateConversationId,
             regenerateMessageId,
             regeneratePayload,
             streamOptions,
@@ -1310,7 +1337,7 @@ async function submitChat(
         editingMessageIndex === undefined &&
         !activeConversationId.value
       ) {
-        prompt.value = promptText || '';
+        prompt.value = submittedPromptText;
       }
     }
 
@@ -1797,11 +1824,16 @@ function getMessageContentRender(
 }
 
 function renderMessageHeader(message: ChatMessageItem) {
-  return h('div', { class: 'mb-1.5 text-xs text-muted-foreground' }, [
-    getMessageDisplayName(message),
-    ' · ',
-    parseDateLabel(message.timestamp),
-  ]);
+  return h(
+    'div',
+    {
+      class: [
+        'mb-1.5 text-xs text-muted-foreground',
+        message.role === 'user' ? 'text-right' : 'text-left',
+      ],
+    },
+    [getMessageDisplayName(message), ' · ', parseDateLabel(message.timestamp)],
+  );
 }
 
 function getMessageDisplayName(message: ChatMessageItem) {
@@ -1887,8 +1919,18 @@ function renderMessageFooter(message: ChatMessageItem) {
   });
 }
 
-function renderMessageExtra(message: ChatMessageItem) {
+function renderMessageExtra(_message: ChatMessageItem) {
   return undefined;
+}
+
+function isMessageBubbleLoading(message: ChatMessageItem) {
+  return (
+    message.role === 'model' &&
+    message.streaming &&
+    !message.content &&
+    !message.structured_data &&
+    !message.is_error
+  );
 }
 
 function renderFooterIconButton(options: {
@@ -2112,67 +2154,77 @@ function renderMcpPopoverContent() {
 }
 
 function renderQuickPhrasePopoverContent() {
+  let quickPhraseContent;
+  if (quickPhraseLoading.value) {
+    quickPhraseContent = h(
+      'div',
+      {
+        class:
+          'flex min-h-[120px] items-center justify-center text-muted-foreground',
+      },
+      [h(ASpin, { size: 'small' })],
+    );
+  } else if (quickPhrases.value.length === 0) {
+    quickPhraseContent = h(AEmpty, {
+      description: '暂无快捷短语',
+      image: null,
+    });
+  } else {
+    quickPhraseContent = h(
+      'div',
+      {
+        class: 'flex max-h-[260px] min-h-[120px] flex-col overflow-y-auto',
+      },
+      quickPhrases.value.map((item) =>
+        h(
+          'button',
+          {
+            key: item.id,
+            class:
+              'flex w-full items-center gap-3 rounded-lg border border-border px-3 py-2 text-left transition-colors hover:border-primary/20 hover:bg-accent/30',
+            onClick: () => {
+              handleQuickPhraseSelect(item);
+            },
+            title: `${item.title} ${item.content}`.trim(),
+            type: 'button',
+          },
+          [
+            h(
+              'span',
+              {
+                class:
+                  'min-w-0 shrink-0 truncate text-xs font-medium text-foreground',
+              },
+              item.title,
+            ),
+            h(
+              'span',
+              {
+                class:
+                  'min-w-0 flex-1 truncate text-[11px] text-muted-foreground/75',
+              },
+              item.content,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   return h('div', { class: 'w-[360px] space-y-3' }, [
     h('div', { class: 'text-xs font-medium text-foreground' }, '快捷短语'),
-    quickPhraseLoading.value
-      ? h(
-          'div',
-          {
-            class:
-              'flex min-h-[120px] items-center justify-center text-muted-foreground',
-          },
-          [h(ASpin, { size: 'small' })],
-        )
-      : quickPhrases.value.length === 0
-        ? h(AEmpty, {
-            description: '暂无快捷短语',
-            image: null,
-          })
-        : h(
-            'div',
-            {
-              class:
-                'flex max-h-[260px] min-h-[120px] flex-col overflow-y-auto',
-            },
-            quickPhrases.value.map((item) =>
-              h(
-                'button',
-                {
-                  key: item.id,
-                  class:
-                    'flex w-full items-center gap-3 rounded-lg border border-border px-3 py-2 text-left transition-colors hover:border-primary/20 hover:bg-accent/30',
-                  onClick: () => {
-                    handleQuickPhraseSelect(item);
-                  },
-                  title: `${item.title} ${item.content}`.trim(),
-                  type: 'button',
-                },
-                [
-                  h(
-                    'span',
-                    {
-                      class:
-                        'min-w-0 shrink-0 truncate text-xs font-medium text-foreground',
-                    },
-                    item.title,
-                  ),
-                  h(
-                    'span',
-                    {
-                      class:
-                        'min-w-0 flex-1 truncate text-[11px] text-muted-foreground/75',
-                    },
-                    item.content,
-                  ),
-                ],
-              ),
-            ),
-          ),
+    quickPhraseContent,
   ]);
 }
 
 const renderSenderFooter: NonNullable<SenderProps['footer']> = (_, info) => {
   const { LoadingButton, SendButton } = info.components;
+  let thinkingButtonTitle = '思考链';
+  if (includeThinking.value) {
+    thinkingButtonTitle = reasoningEffort.value
+      ? `思考链：${reasoningEffort.value}`
+      : '思考链已开启';
+  }
 
   return h(
     AFlex,
@@ -2207,11 +2259,7 @@ const renderSenderFooter: NonNullable<SenderProps['footer']> = (_, info) => {
                 renderFooterIconButton({
                   disabled: sending.value,
                   icon: 'mdi:head-lightbulb-outline',
-                  title: includeThinking.value
-                    ? reasoningEffort.value
-                      ? `思考链：${reasoningEffort.value}`
-                      : '思考链已开启'
-                    : '思考链',
+                  title: thinkingButtonTitle,
                 }),
             },
           ),
@@ -2397,6 +2445,16 @@ onMounted(async () => {
   } else {
     createNewConversation();
   }
+
+  hasInitialized = true;
+});
+
+onActivated(async () => {
+  if (!hasInitialized) {
+    return;
+  }
+
+  await refreshChatResources();
 });
 
 onBeforeUnmount(() => {
@@ -2446,258 +2504,242 @@ onBeforeUnmount(() => {
     <section
       class="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[var(--radius)] border border-border bg-card"
     >
-        <div class="border-b border-border px-5 py-4 md:px-6">
-          <div class="flex flex-wrap items-start gap-3">
-            <div class="min-w-0 flex-1">
-              <template v-if="isRenamingConversation && activeConversationId">
-                <div class="flex flex-wrap items-center gap-2">
-                  <a-input
-                    v-model:value="renameTitle"
-                    class="max-w-[360px]"
-                    placeholder="请输入话题标题"
-                    @press-enter="submitRenameConversation"
-                  />
-                  <VbenButton size="sm" @click="submitRenameConversation">
-                    保存
-                  </VbenButton>
-                  <VbenButton
-                    size="sm"
-                    variant="outline"
-                    @click="cancelRenameConversation"
-                  >
-                    取消
-                  </VbenButton>
-                </div>
-              </template>
-              <template v-else>
-                <div class="flex min-w-0 items-center justify-between gap-4">
-                  <div
-                    class="inline-flex min-w-0 max-w-full items-center gap-2"
-                  >
-                    <div
-                      class="min-w-0 max-w-[220px] truncate text-[13px] font-semibold leading-7 text-foreground"
-                      :title="activeConversationTitle"
-                    >
-                      {{ activeConversationTitle }}
-                    </div>
-                    <span
-                      v-if="activeConversation?.is_pinned"
-                      class="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
-                    >
-                      置顶
-                    </span>
-                    <span
-                      class="shrink-0 text-xs leading-none text-muted-foreground"
-                      >&gt;</span
-                    >
-                    <a-popover placement="bottomLeft" trigger="click">
-                      <template #content>
-                        <div class="w-[280px] space-y-3">
-                          <div>
-                            <div
-                              class="mb-2 text-xs font-medium text-foreground"
-                            >
-                              供应商
-                            </div>
-                            <a-select
-                              v-model:value="selectedProviderId"
-                              class="w-full"
-                              :disabled="sending || resourcesLoading"
-                              :options="providerOptions"
-                              placeholder="请选择供应商"
-                            />
-                          </div>
-                          <div>
-                            <div
-                              class="mb-2 text-xs font-medium text-foreground"
-                            >
-                              模型
-                            </div>
-                            <a-select
-                              v-model:value="selectedModelId"
-                              class="w-full"
-                              :disabled="
-                                sending ||
-                                resourcesLoading ||
-                                modelOptions.length === 0
-                              "
-                              :options="modelOptions"
-                              placeholder="请选择模型"
-                            />
-                          </div>
-                        </div>
-                      </template>
-                      <button
-                        class="inline-flex min-w-0 max-w-[360px] items-center gap-1 rounded-md px-1 py-1 text-[13px] leading-7 text-foreground transition-colors hover:bg-accent/55"
-                        :disabled="sending || resourcesLoading"
-                        type="button"
-                      >
-                        <span class="truncate">{{
-                          selectedProviderModelLabel
-                        }}</span>
-                        <IconifyIcon
-                          class="size-3.5 shrink-0 text-muted-foreground"
-                          icon="mdi:chevron-down"
-                        />
-                      </button>
-                    </a-popover>
-                  </div>
-                  <div
-                    class="min-w-0 flex-1 truncate text-right text-xs leading-tight text-muted-foreground"
-                    :title="activeConversationSubtitle"
-                  >
-                    {{ activeConversationSubtitle }}
-                  </div>
-                </div>
-              </template>
-            </div>
-
-            <VbenButton
-              v-if="sending"
-              danger
-              size="sm"
-              variant="outline"
-              @click="stopStreaming"
-            >
-              停止
-            </VbenButton>
-          </div>
-        </div>
-
-        <div
-          ref="messageContainerRef"
-          class="flex-1 overflow-y-auto bg-background/60 px-5 py-5 md:px-6 md:py-6"
-        >
-          <a-alert v-if="streamError" class="mb-4" show-icon type="error">
-            <template #message>
-              <div class="whitespace-pre-wrap">{{ streamError }}</div>
-            </template>
-          </a-alert>
-          <div
-            v-if="detailLoading"
-            class="flex min-h-full items-center justify-center"
-          >
-            <ASpin />
-          </div>
-          <div
-            v-else-if="displayMessages.length === 0"
-            class="flex min-h-full items-center justify-center"
-          >
-            <div class="w-full max-w-[720px]">
-              <Welcome
-                :description="
-                  selectedProviderId && selectedModelId
-                    ? `当前模型：${selectedProviderModelLabel}`
-                    : '选择供应商和模型后开始对话'
-                "
-                title="开始新的对话"
-              />
-            </div>
-          </div>
-          <template v-else>
-            <div
-              v-for="item in displayMessages"
-              :key="item.id"
-              class="mb-3.5 flex"
-              :class="
-                item.kind === 'message' && item.message.role === 'user'
-                  ? 'justify-end'
-                  : 'justify-start'
-              "
-            >
-              <div
-                class="flex max-w-[92%] flex-col md:max-w-[84%]"
-                :class="
-                  item.kind === 'message' && item.message.role === 'user'
-                    ? 'items-end'
-                    : 'items-start'
-                "
-              >
-                <div
-                  v-if="
-                    item.kind === 'pending-thinking' || item.thinkingContent
-                  "
-                  class="mb-3 w-full"
+      <div class="border-b border-border px-5 py-4 md:px-6">
+        <div class="flex flex-wrap items-start gap-3">
+          <div class="min-w-0 flex-1">
+            <template v-if="isRenamingConversation && activeConversationId">
+              <div class="flex flex-wrap items-center gap-2">
+                <a-input
+                  v-model:value="renameTitle"
+                  class="max-w-[360px]"
+                  placeholder="请输入话题标题"
+                  @press-enter="submitRenameConversation"
+                />
+                <VbenButton size="sm" @click="submitRenameConversation">
+                  保存
+                </VbenButton>
+                <VbenButton
+                  size="sm"
+                  variant="outline"
+                  @click="cancelRenameConversation"
                 >
-                  <Think
-                    :blink="item.thinkingStreaming"
-                    :expanded="isThinkingExpanded(item)"
-                    :loading="item.thinkingStreaming"
-                    :title="getThinkingToggleLabel(item)"
-                    @update:expanded="toggleThinkingPanel(item)"
-                  >
-                    <MarkdownContent
-                      :content="item.thinkingContent || ''"
-                      :streaming="Boolean(item.thinkingStreaming)"
-                    />
-                  </Think>
-                </div>
-
-                <template v-if="item.kind === 'message'">
-                  <Bubble
-                    :avatar="renderMessageAvatar(item.message)"
-                    :classes="getMessageBubbleClasses(item.message)"
-                    :content="item.message.content"
-                    :content-render="getMessageContentRender(item.message)"
-                    :editable="
-                      isEditingMessage(item.message)
-                        ? {
-                            cancelText: '取消',
-                            editing: true,
-                            okText:
-                              editingMessageIntent === 'resend'
-                                ? '重发'
-                                : '保存',
-                          }
-                        : false
-                    "
-                    :extra="renderMessageExtra(item.message)"
-                    :footer="renderMessageFooter(item.message)"
-                    :footer-placement="
-                      item.message.role === 'user' ? 'outer-end' : 'outer-start'
-                    "
-                    :header="renderMessageHeader(item.message)"
-                    :loading="
-                      item.message.role === 'model' &&
-                      item.message.streaming &&
-                      !item.message.content &&
-                      !item.message.structured_data &&
-                      !item.message.is_error
-                    "
-                    :placement="item.message.role === 'user' ? 'end' : 'start'"
-                    :streaming="
-                      item.message.role === 'model' && item.message.streaming
-                    "
-                    :on-edit-cancel="cancelEditMessage"
-                    :on-edit-confirm="
-                      (value) =>
-                        editingMessageIntent === 'resend'
-                          ? resendEditedMessage(String(value))
-                          : saveEditedMessage(String(value))
-                    "
-                  />
-                </template>
+                  取消
+                </VbenButton>
               </div>
-            </div>
-          </template>
-        </div>
+            </template>
+            <template v-else>
+              <div class="flex min-w-0 items-center justify-between gap-4">
+                <div class="inline-flex min-w-0 max-w-full items-center gap-2">
+                  <div
+                    class="min-w-0 max-w-[220px] truncate text-[13px] font-semibold leading-7 text-foreground"
+                    :title="activeConversationTitle"
+                  >
+                    {{ activeConversationTitle }}
+                  </div>
+                  <span
+                    v-if="activeConversation?.is_pinned"
+                    class="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
+                  >
+                    置顶
+                  </span>
+                  <IconifyIcon
+                    class="size-3 shrink-0 text-muted-foreground"
+                    icon="mdi:chevron-right"
+                  />
+                  <a-popover placement="bottomLeft" trigger="click">
+                    <template #content>
+                      <div class="w-[280px] space-y-3">
+                        <div>
+                          <div class="mb-2 text-xs font-medium text-foreground">
+                            供应商
+                          </div>
+                          <a-select
+                            v-model:value="selectedProviderId"
+                            class="w-full"
+                            :disabled="sending || resourcesLoading"
+                            :options="providerOptions"
+                            placeholder="请选择供应商"
+                          />
+                        </div>
+                        <div>
+                          <div class="mb-2 text-xs font-medium text-foreground">
+                            模型
+                          </div>
+                          <a-select
+                            v-model:value="selectedModelId"
+                            class="w-full"
+                            :disabled="
+                              sending ||
+                              resourcesLoading ||
+                              modelOptions.length === 0
+                            "
+                            :options="modelOptions"
+                            placeholder="请选择模型"
+                          />
+                        </div>
+                      </div>
+                    </template>
+                    <button
+                      class="inline-flex min-w-0 max-w-[360px] items-center gap-1 rounded-md px-1 py-1 text-[13px] leading-7 text-foreground transition-colors hover:bg-accent/55"
+                      :disabled="sending || resourcesLoading"
+                      type="button"
+                    >
+                      <span class="truncate">{{
+                        selectedProviderModelLabel
+                      }}</span>
+                      <IconifyIcon
+                        class="size-3.5 shrink-0 text-muted-foreground"
+                        icon="mdi:chevron-down"
+                      />
+                    </button>
+                  </a-popover>
+                </div>
+                <div
+                  class="min-w-0 flex-1 truncate text-right text-xs leading-tight text-muted-foreground"
+                  :title="activeConversationSubtitle"
+                >
+                  {{ activeConversationSubtitle }}
+                </div>
+              </div>
+            </template>
+          </div>
 
-        <div class="bg-card px-5 pb-5 pt-4 md:px-6 md:pb-6 md:pt-4">
-          <div class="relative">
-            <Sender
-              :auto-size="senderAutoSize"
-              :disabled="sending"
-              :footer="renderSenderFooter"
-              :loading="sending"
-              :on-cancel="stopStreaming"
-              :on-change="handleSenderChange"
-              :on-submit="handleSenderSubmit"
-              placeholder="在这里输入消息，按 Enter 发送"
-              :suffix="false"
-              :value="prompt"
+          <VbenButton
+            v-if="sending"
+            danger
+            size="sm"
+            variant="outline"
+            @click="stopStreaming"
+          >
+            停止
+          </VbenButton>
+        </div>
+      </div>
+
+      <div
+        ref="messageContainerRef"
+        class="flex-1 overflow-y-auto bg-background/60 px-5 py-5 md:px-6 md:py-6"
+      >
+        <a-alert v-if="streamError" class="mb-4" show-icon type="error">
+          <template #message>
+            <div class="whitespace-pre-wrap">{{ streamError }}</div>
+          </template>
+        </a-alert>
+        <div
+          v-if="detailLoading"
+          class="flex min-h-full items-center justify-center"
+        >
+          <ASpin />
+        </div>
+        <div
+          v-else-if="displayMessages.length === 0"
+          class="flex min-h-full items-center justify-center"
+        >
+          <div class="w-full max-w-[720px]">
+            <Welcome
+              :description="
+                selectedProviderId && selectedModelId
+                  ? `当前模型：${selectedProviderModelLabel}`
+                  : '选择供应商和模型后开始对话'
+              "
+              title="开始新的对话"
             />
           </div>
         </div>
+        <template v-else>
+          <div
+            v-for="item in displayMessages"
+            :key="item.id"
+            class="mb-3.5 flex"
+            :class="
+              item.kind === 'message' && item.message.role === 'user'
+                ? 'justify-end'
+                : 'justify-start'
+            "
+          >
+            <div
+              class="flex w-fit max-w-[92%] flex-col md:max-w-[84%]"
+              :class="
+                item.kind === 'message' && item.message.role === 'user'
+                  ? 'items-end'
+                  : 'items-start'
+              "
+            >
+              <div
+                v-if="item.kind === 'pending-thinking' || item.thinkingContent"
+                class="mb-3 w-full"
+              >
+                <Think
+                  :blink="item.thinkingStreaming"
+                  :expanded="isThinkingExpanded(item)"
+                  :loading="item.thinkingStreaming"
+                  :title="getThinkingToggleLabel(item)"
+                  @update:expanded="toggleThinkingPanel(item)"
+                >
+                  <MarkdownContent
+                    :content="item.thinkingContent || ''"
+                    :streaming="Boolean(item.thinkingStreaming)"
+                  />
+                </Think>
+              </div>
+
+              <template v-if="item.kind === 'message'">
+                <Bubble
+                  :avatar="renderMessageAvatar(item.message)"
+                  :classes="getMessageBubbleClasses(item.message)"
+                  :content="item.message.content"
+                  :content-render="getMessageContentRender(item.message)"
+                  :editable="
+                    isEditingMessage(item.message)
+                      ? {
+                          cancelText: '取消',
+                          editing: true,
+                          okText:
+                            editingMessageIntent === 'resend' ? '重发' : '保存',
+                        }
+                      : false
+                  "
+                  :extra="renderMessageExtra(item.message)"
+                  :footer="renderMessageFooter(item.message)"
+                  :footer-placement="
+                    item.message.role === 'user' ? 'outer-end' : 'outer-start'
+                  "
+                  :header="renderMessageHeader(item.message)"
+                  :loading="isMessageBubbleLoading(item.message)"
+                  :placement="item.message.role === 'user' ? 'end' : 'start'"
+                  :streaming="
+                    item.message.role === 'model' && item.message.streaming
+                  "
+                  :on-edit-cancel="cancelEditMessage"
+                  :on-edit-confirm="
+                    (value) =>
+                      editingMessageIntent === 'resend'
+                        ? resendEditedMessage(String(value))
+                        : saveEditedMessage(String(value))
+                  "
+                />
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <div class="bg-card px-5 pb-5 pt-4 md:px-6 md:pb-6 md:pt-4">
+        <div class="relative">
+          <Sender
+            :auto-size="senderAutoSize"
+            :disabled="sending"
+            :footer="renderSenderFooter"
+            :loading="sending"
+            :on-cancel="stopStreaming"
+            :on-change="handleSenderChange"
+            :on-submit="handleSenderSubmit"
+            placeholder="在这里输入消息，按 Enter 发送"
+            :suffix="false"
+            :value="prompt"
+          />
+        </div>
+      </div>
     </section>
 
     <SettingsModal content-class="px-4 py-4 md:px-5 md:py-5">
@@ -2727,10 +2769,10 @@ onBeforeUnmount(() => {
           <div class="grid gap-4 md:grid-cols-2">
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
-                <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Temperature</span
-                  >
+                <span
+                  class="inline-flex min-w-0 items-center gap-1.5 text-sm text-foreground"
+                >
+                  <span class="font-medium">Temperature</span>
                   <a-tooltip
                     placement="right"
                     title="控制回答的发散程度，越低越稳定，越高越灵活。取值范围 0 到 2。"
@@ -2775,10 +2817,10 @@ onBeforeUnmount(() => {
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
-                <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Max Tokens</span
-                  >
+                <span
+                  class="inline-flex min-w-0 items-center gap-1.5 text-sm text-foreground"
+                >
+                  <span class="font-medium">Max Tokens</span>
                   <a-tooltip
                     placement="right"
                     title="限制单次回答长度，可选；不填时由模型自行决定。"
@@ -2798,10 +2840,10 @@ onBeforeUnmount(() => {
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
-                <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Timeout</span
-                  >
+                <span
+                  class="inline-flex min-w-0 items-center gap-1.5 text-sm text-foreground"
+                >
+                  <span class="font-medium">Timeout</span>
                   <a-tooltip
                     placement="right"
                     title="超过这个时间还没返回结果时，请求会被视为超时，单位为秒。"
@@ -2847,10 +2889,10 @@ onBeforeUnmount(() => {
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
-                <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Presence Penalty</span
-                  >
+                <span
+                  class="inline-flex min-w-0 items-center gap-1.5 text-sm text-foreground"
+                >
+                  <span class="font-medium">Presence Penalty</span>
                   <a-tooltip
                     placement="right"
                     title="提高后更鼓励模型引入新内容，减少重复话题。取值范围 -2 到 2。"
@@ -2872,10 +2914,10 @@ onBeforeUnmount(() => {
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
-                <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Frequency Penalty</span
-                  >
+                <span
+                  class="inline-flex min-w-0 items-center gap-1.5 text-sm text-foreground"
+                >
+                  <span class="font-medium">Frequency Penalty</span>
                   <a-tooltip
                     placement="right"
                     title="提高后更少重复相同措辞，适合压制啰嗦输出。取值范围 -2 到 2。"
@@ -2935,10 +2977,10 @@ onBeforeUnmount(() => {
           <div class="grid gap-4">
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
-                <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >停止序列</span
-                  >
+                <span
+                  class="inline-flex min-w-0 items-center gap-1.5 text-sm text-foreground"
+                >
+                  <span class="font-medium">停止序列</span>
                   <a-tooltip
                     placement="right"
                     title="当生成到这些内容时立即停止，适合截断特定格式。这里填写的是 JSON 数组。"
@@ -2953,15 +2995,15 @@ onBeforeUnmount(() => {
               <a-textarea
                 v-model:value="stopSequences"
                 :auto-size="{ minRows: 2, maxRows: 4 }"
-                placeholder='["</thinking>"]'
+                :placeholder="stopSequencesPlaceholder"
               />
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
-                <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Extra Headers</span
-                  >
+                <span
+                  class="inline-flex min-w-0 items-center gap-1.5 text-sm text-foreground"
+                >
+                  <span class="font-medium">Extra Headers</span>
                   <a-tooltip
                     placement="right"
                     title="额外附加到模型请求中的请求头，通常用于特殊网关。这里填写的是 JSON 对象。"
@@ -2976,15 +3018,15 @@ onBeforeUnmount(() => {
               <a-textarea
                 v-model:value="extraHeaders"
                 :auto-size="{ minRows: 2, maxRows: 4 }"
-                placeholder='{"x-trace-id":"chat-demo"}'
+                :placeholder="extraHeadersPlaceholder"
               />
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
-                <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Extra Body</span
-                  >
+                <span
+                  class="inline-flex min-w-0 items-center gap-1.5 text-sm text-foreground"
+                >
+                  <span class="font-medium">Extra Body</span>
                   <a-tooltip
                     placement="right"
                     title="透传额外请求体字段，适合补充模型专属参数。这里填写的是 JSON 内容。"
@@ -2999,15 +3041,15 @@ onBeforeUnmount(() => {
               <a-textarea
                 v-model:value="extraBody"
                 :auto-size="{ minRows: 2, maxRows: 5 }"
-                placeholder='{"reasoning":{"effort":"medium"}}'
+                :placeholder="extraBodyPlaceholder"
               />
             </div>
             <div class="space-y-2">
               <div class="flex items-center justify-between gap-3">
-                <span class="inline-flex min-w-0 items-center gap-1.5">
-                  <span class="text-sm font-medium text-foreground"
-                    >Logit Bias</span
-                  >
+                <span
+                  class="inline-flex min-w-0 items-center gap-1.5 text-sm text-foreground"
+                >
+                  <span class="font-medium">Logit Bias</span>
                   <a-tooltip
                     placement="right"
                     title="用来提高或压低特定 token 的出现概率，适合高级控制。这里填写的是 JSON 对象。"
@@ -3022,7 +3064,7 @@ onBeforeUnmount(() => {
               <a-textarea
                 v-model:value="logitBias"
                 :auto-size="{ minRows: 2, maxRows: 4 }"
-                placeholder='{"198":-100}'
+                :placeholder="logitBiasPlaceholder"
               />
             </div>
           </div>

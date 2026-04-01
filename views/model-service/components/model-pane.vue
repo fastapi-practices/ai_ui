@@ -168,7 +168,8 @@ const [Modal, modalApi] = useVbenModal({
     }
 
     modalApi.lock();
-    const values = await formApi.getValues<Omit<AIModelParams, 'provider_id'>>();
+    const values =
+      await formApi.getValues<Omit<AIModelParams, 'provider_id'>>();
     const payload: AIModelParams = {
       ...values,
       provider_id: props.provider.id,

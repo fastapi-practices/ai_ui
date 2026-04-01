@@ -11,7 +11,12 @@ import {
 } from '@vben/icons';
 import { $t } from '@vben/locales';
 
-import { Empty as AEmpty, message, Spin as ASpin, Tag as ATag } from 'antdv-next';
+import {
+  Empty as AEmpty,
+  Spin as ASpin,
+  Tag as ATag,
+  message,
+} from 'antdv-next';
 
 import { useVbenForm } from '#/adapter/form';
 import {
@@ -32,7 +37,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  'providers-change': [providers: AIProviderResult[]];
+  providersChange: [providers: AIProviderResult[]];
   select: [providerId: number];
 }>();
 
@@ -46,9 +51,12 @@ const modalTitle = computed(() => {
     : $t('ui.actionTitle.create', ['供应商']);
 });
 
-function syncProviders(nextProviders: AIProviderResult[], preferredId?: number) {
+function syncProviders(
+  nextProviders: AIProviderResult[],
+  preferredId?: number,
+) {
   providers.value = nextProviders;
-  emit('providers-change', nextProviders);
+  emit('providersChange', nextProviders);
 
   const nextId = pickActiveProviderId(
     nextProviders,
@@ -71,7 +79,9 @@ async function refreshProviders(preferredId?: number) {
 }
 
 async function handleDelete(provider: AIProviderResult) {
-  const fallbackId = providers.value.find((item) => item.id !== provider.id)?.id;
+  const fallbackId = providers.value.find(
+    (item) => item.id !== provider.id,
+  )?.id;
 
   await deleteAIProviderApi([provider.id]);
   message.success({
@@ -107,10 +117,10 @@ const [Modal, modalApi] = useVbenModal({
         await modalApi.close();
         await refreshProviders(editingId);
       } else {
-        const createdProvider = await createAIProviderApi(values);
-        syncProviders([createdProvider, ...providers.value], createdProvider.id);
+        await createAIProviderApi(values);
         message.success($t('ui.actionMessage.operationSuccess'));
         await modalApi.close();
+        await refreshProviders();
       }
     } finally {
       modalApi.unlock();
@@ -142,10 +152,14 @@ onMounted(async () => {
   <div
     class="flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius)] border border-border bg-card"
   >
-    <div class="flex items-center justify-between border-b border-border px-4 py-3">
+    <div
+      class="flex items-center justify-between border-b border-border px-4 py-3"
+    >
       <div>
         <div class="text-sm font-medium text-foreground">供应商</div>
-        <div class="text-xs text-muted-foreground">选择供应商后查看右侧模型</div>
+        <div class="text-xs text-muted-foreground">
+          选择供应商后查看右侧模型
+        </div>
       </div>
       <VbenButton size="sm" @click="() => modalApi.setData(null).open()">
         <MaterialSymbolsAdd class="size-4" />
