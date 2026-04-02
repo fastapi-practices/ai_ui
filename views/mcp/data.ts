@@ -4,6 +4,14 @@ import type { AIMcpResult } from '#/plugins/ai/api';
 
 import { $t } from '@vben/locales';
 
+function buildFieldAttrs(fieldName: string) {
+  return {
+    autocomplete: 'off',
+    id: `ai-mcp-${fieldName}`,
+    name: fieldName,
+  };
+}
+
 export const MCP_TYPE_OPTIONS = [
   { label: 'stdio', value: 0 },
   { label: 'sse', value: 1 },
@@ -19,6 +27,7 @@ export const MCP_TYPE_TAG_OPTIONS = [
 export const queryMcpSchema: VbenFormSchema[] = [
   {
     component: 'Input',
+    componentProps: buildFieldAttrs('name-query'),
     fieldName: 'name',
     label: 'MCP 名称',
   },
@@ -26,6 +35,7 @@ export const queryMcpSchema: VbenFormSchema[] = [
     component: 'Select',
     componentProps: {
       allowClear: true,
+      ...buildFieldAttrs('type-query'),
       options: MCP_TYPE_OPTIONS,
     },
     fieldName: 'type',
@@ -78,6 +88,7 @@ export function useMcpColumns(
 export const mcpSchema: VbenFormSchema[] = [
   {
     component: 'Input',
+    componentProps: buildFieldAttrs('name'),
     fieldName: 'name',
     label: 'MCP 名称',
     rules: 'required',
@@ -96,6 +107,7 @@ export const mcpSchema: VbenFormSchema[] = [
   },
   {
     component: 'Input',
+    componentProps: buildFieldAttrs('url'),
     fieldName: 'url',
     label: '端点链接',
     dependencies: {
@@ -105,6 +117,7 @@ export const mcpSchema: VbenFormSchema[] = [
   },
   {
     component: 'Input',
+    componentProps: buildFieldAttrs('command'),
     fieldName: 'command',
     label: '启动命令',
     rules: 'required',
@@ -113,6 +126,7 @@ export const mcpSchema: VbenFormSchema[] = [
     component: 'Textarea',
     componentProps: {
       autoSize: { minRows: 3, maxRows: 8 },
+      ...buildFieldAttrs('headers'),
     },
     fieldName: 'headers',
     label: '请求头',
@@ -125,6 +139,7 @@ export const mcpSchema: VbenFormSchema[] = [
     component: 'Textarea',
     componentProps: {
       autoSize: { minRows: 4, maxRows: 10 },
+      ...buildFieldAttrs('args'),
       placeholder: '--config\n--verbose',
     },
     fieldName: 'args',
@@ -139,6 +154,7 @@ export const mcpSchema: VbenFormSchema[] = [
     component: 'Textarea',
     componentProps: {
       autoSize: { minRows: 4, maxRows: 10 },
+      ...buildFieldAttrs('env'),
       placeholder: 'OPENAI_API_KEY=sk-xxx\nOPENAI_BASE_URL=https://example.com',
     },
     fieldName: 'env',
@@ -153,7 +169,9 @@ export const mcpSchema: VbenFormSchema[] = [
     component: 'InputNumber',
     componentProps: {
       class: 'w-full',
+      id: 'ai-mcp-timeout',
       min: 0,
+      name: 'timeout',
       step: 0.5,
     },
     defaultValue: 5,
@@ -164,7 +182,9 @@ export const mcpSchema: VbenFormSchema[] = [
     component: 'InputNumber',
     componentProps: {
       class: 'w-full',
+      id: 'ai-mcp-read-timeout',
       min: 0,
+      name: 'read_timeout',
       step: 1,
     },
     defaultValue: 300,
@@ -173,6 +193,7 @@ export const mcpSchema: VbenFormSchema[] = [
   },
   {
     component: 'Textarea',
+    componentProps: buildFieldAttrs('description'),
     fieldName: 'description',
     label: '描述',
   },

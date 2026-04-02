@@ -179,6 +179,13 @@ export type AGUIStreamEventType =
   | 'THINKING_TEXT_MESSAGE_END'
   | 'THINKING_TEXT_MESSAGE_START';
 
+export interface AGUISSEChunk {
+  data?: string;
+  event?: string;
+  id?: string;
+  retry?: string;
+}
+
 interface AGUIBaseStreamEvent {
   rawEvent?: unknown;
   timestamp?: number | string;

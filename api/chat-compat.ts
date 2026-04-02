@@ -2,6 +2,7 @@ import type { Recordable } from '@vben/types';
 
 import type {
   AGUIMessage,
+  AGUISSEChunk,
   AGUIStreamEvent,
   AIChatCompletionRequest,
   AIChatForwardedPropsParam,
@@ -21,6 +22,11 @@ export interface BuildChatCompletionRequestInput {
   history: AIChatMessageDetail[];
   params: AIChatParams;
   promptText?: string;
+}
+
+export interface ConsumedAGUIChunk {
+  event: AGUIStreamEvent;
+  message: AIChatMessage | null;
 }
 
 function parseExtraBody(
@@ -259,6 +265,58 @@ export function parseAGUIStreamEventFromSSE(
     return data as AGUIStreamEvent;
   }
   return null;
+}
+
+export function parseAGUIStreamEventFromChunk(
+  chunk: AGUISSEChunk,
+): AGUIStreamEvent | null {
+  const rawData = chunk.data?.trim();
+  if (!rawData) {
+    return null;
+  }
+
+  try {
+    return parseAGUIStreamEventFromSSE(JSON.parse(rawData));
+  } catch {
+    return null;
+  }
+}
+
+export function consumeBufferedAGUIChunks(
+  buffer: string,
+  accumulator: AGUIStreamAccumulator,
+  onChunk: (chunk: ConsumedAGUIChunk) => void,
+) {
+  const segments = buffer.split(/\r?\n\r?\n/u);
+  const rest = segments.pop() || '';
+
+  for (const segment of segments) {
+    const lines = segment
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (lines.length === 0) {
+      continue;
+    }
+
+    const data = lines
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim())
+      .join('\n');
+
+    const event = parseAGUIStreamEventFromChunk({ data });
+    if (!event) {
+      continue;
+    }
+
+    onChunk({
+      event,
+      message: toAIChatMessageFromAGUIEvent(event, accumulator),
+    });
+  }
+
+  return rest;
 }
 
 export function toAIChatMessageFromAGUIEvent(

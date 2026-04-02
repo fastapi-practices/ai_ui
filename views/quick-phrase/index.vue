@@ -127,15 +127,17 @@ const [Modal, modalApi] = useVbenModal({
     }
 
     modalApi.lock();
-    const data = await formApi.getValues<AIQuickPhraseParams>();
 
     try {
+      const data = await formApi.getValues<AIQuickPhraseParams>();
       await (formData.value?.id
         ? updateAIQuickPhraseApi(formData.value.id, data)
         : createAIQuickPhraseApi(data));
       message.success($t('ui.actionMessage.operationSuccess'));
       await modalApi.close();
       onRefresh();
+    } catch (error) {
+      message.error((error as Error).message);
     } finally {
       modalApi.unlock();
     }
@@ -165,7 +167,7 @@ const [Modal, modalApi] = useVbenModal({
         </VbenButton>
       </template>
     </Grid>
-    <Modal :title="modalTitle">
+    <Modal content-class="px-4 py-4 md:px-5 md:py-5" :title="modalTitle">
       <Form />
     </Modal>
   </Page>

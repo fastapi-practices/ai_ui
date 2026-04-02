@@ -14,9 +14,7 @@ import type { ChatMessageItem } from './data';
 import type {
   AIChatConversationDetail,
   AIChatConversationItem,
-  AIChatMessage,
   AIChatParams,
-  AIChatStreamOptions,
   AIMcpResult,
   AIModelResult,
   AIProviderResult,
@@ -48,9 +46,7 @@ import {
   Actions,
   Bubble,
   CodeHighlighter,
-  Conversations,
   Mermaid,
-  Sender,
   Think,
   Welcome,
 } from '@antdv-next/x';
@@ -79,23 +75,22 @@ import {
   getAllAIQuickPhraseApi,
   getRecentAIChatConversationsApi,
   pinAIChatConversationApi,
-  regenerateAIChatFromMessageApi,
-  regenerateAIChatFromResponseApi,
-  streamAIChatApi,
   updateAIChatConversationApi,
   updateAIChatMessageApi,
 } from '#/plugins/ai/api';
 
 import {
-  buildMessageId,
-  consumeBufferedSSEMessages,
+  buildTransientMessageItems,
+  createProviderUserMessage,
   makeConversationTitle,
-  mergeModelContent,
   normalizeMessage,
   parseDateLabel,
   parseJsonField,
-  resolveChatMessageContent,
 } from './data';
+import type { AIChatProviderRequest } from './provider/chat-request';
+import ChatSender from './components/chat-sender.vue';
+import ChatSidebar from './components/chat-sidebar.vue';
+import { useChatStream } from './composables/use-chat-stream';
 
 type ThinkingPanelState = {
   autoOpened: boolean;
@@ -153,7 +148,16 @@ const quickPhraseLoading = ref(false);
 const sidebarLoading = ref(false);
 const sidebarMoreLoading = ref(false);
 const detailLoading = ref(false);
-const sending = ref(false);
+const {
+  abort: abortTransientRequest,
+  chatProvider,
+  isRequesting,
+  messages: transientMessagesState,
+  onRequest: onTransientRequest,
+  setMessages: setTransientMessages,
+  transientRequestError,
+} = useChatStream();
+const sending = computed(() => isRequesting.value);
 
 const hasMoreConversations = ref(false);
 const conversationBeforeCursor = ref<string>();
@@ -244,8 +248,6 @@ const REASONING_EFFORT_OPTIONS: Array<{
 
 let currentModelFetchId = 0;
 let currentConversationFetchId = 0;
-let currentStreamId = 0;
-let abortController: AbortController | undefined;
 let hasInitialized = false;
 
 function upsertConversation(summary: AIChatConversationItem) {
@@ -358,6 +360,7 @@ function createNewConversation() {
   currentConversationFetchId++;
   activeConversationId.value = undefined;
   activeMessages.value = [];
+  setTransientMessages([]);
   draftConversationTitle.value = '新话题';
   detailLoading.value = false;
   streamError.value = '';
@@ -381,208 +384,8 @@ function syncConversationSummaryFromDetail(detail: AIChatConversationDetail) {
   });
 }
 
-function finalizeStreamingMessages() {
-  activeMessages.value = activeMessages.value.map((item) => ({
-    ...item,
-    streaming: false,
-  }));
-}
-
-function insertOptimisticUserMessage(content: string) {
-  const hasStreamingUser = activeMessages.value.some(
-    (item) => item.role === 'user' && item.streaming,
-  );
-  if (hasStreamingUser) {
-    return;
-  }
-
-  activeMessages.value.push({
-    content,
-    conversation_id: activeConversationId.value ?? null,
-    error_message: null,
-    id: buildMessageId(`streaming-user-${Date.now()}`),
-    is_error: false,
-    message_id: null,
-    message_index: activeMessages.value.length,
-    role: 'user',
-    structured_data: null,
-    streaming: true,
-    timestamp: new Date().toISOString(),
-  });
-}
-
-function insertStreamingModelSkeleton() {
-  const hasStreamingModel = activeMessages.value.some(
-    (item) => item.role === 'model' && item.streaming,
-  );
-  if (hasStreamingModel) {
-    return;
-  }
-
-  activeMessages.value.push({
-    content: '',
-    conversation_id: activeConversationId.value ?? null,
-    error_message: null,
-    id: `streaming-model-${Date.now()}`,
-    is_error: false,
-    message_id: null,
-    message_index: activeMessages.value.length,
-    role: 'model',
-    structured_data: null,
-    streaming: true,
-    timestamp: new Date().toISOString(),
-  });
-}
-
 function stopStreaming() {
-  abortController?.abort();
-  abortController = undefined;
-  sending.value = false;
-  finalizeStreamingMessages();
-}
-
-function findStreamingMessage(data: AIChatMessage) {
-  for (let index = activeMessages.value.length - 1; index >= 0; index -= 1) {
-    const item = activeMessages.value[index];
-    if (!item) {
-      continue;
-    }
-
-    if (data.message_id !== undefined && data.message_id !== null) {
-      if (item.message_id === data.message_id) {
-        return item;
-      }
-      continue;
-    }
-
-    if (
-      item.role === data.role &&
-      (data.message_index === undefined ||
-        data.message_index === item.message_index)
-    ) {
-      return item;
-    }
-  }
-
-  return undefined;
-}
-
-function resolveTransientStreamMessageIndex(data: AIChatMessage) {
-  if (data.message_index !== undefined) {
-    return data.message_index;
-  }
-
-  const latestSameRoleStreaming = [...activeMessages.value]
-    .toReversed()
-    .find((item) => item.role === data.role && item.streaming);
-  if (latestSameRoleStreaming) {
-    return latestSameRoleStreaming.message_index;
-  }
-
-  if (data.role === 'thinking') {
-    const latestModel = [...activeMessages.value]
-      .toReversed()
-      .find((item) => item.role === 'model');
-    return latestModel?.message_index;
-  }
-
-  return undefined;
-}
-
-function applyStreamMessage(rawData: AIChatMessage) {
-  const data: AIChatMessage = {
-    ...rawData,
-    message_index: resolveTransientStreamMessageIndex(rawData),
-  };
-  const messageContent = resolveChatMessageContent(data);
-  const existingConversation = activeConversationId.value
-    ? conversations.value.find(
-        (item) => item.conversation_id === activeConversationId.value,
-      )
-    : undefined;
-
-  if (data.conversation_id && !activeConversationId.value) {
-    activeConversationId.value = data.conversation_id;
-    upsertConversation({
-      conversation_id: data.conversation_id,
-      created_time: data.timestamp,
-      id: 0,
-      is_pinned: false,
-      title: draftConversationTitle.value,
-      updated_time: data.timestamp,
-    });
-  }
-
-  const existingMessage = findStreamingMessage(data);
-
-  if (data.role === 'user') {
-    if (existingMessage) {
-      existingMessage.content = messageContent;
-      existingMessage.conversation_id =
-        data.conversation_id ?? existingMessage.conversation_id;
-      existingMessage.error_message =
-        data.error_message ?? existingMessage.error_message;
-      existingMessage.is_error = data.is_error ?? existingMessage.is_error;
-      existingMessage.message_id =
-        data.message_id ?? existingMessage.message_id;
-      existingMessage.message_index =
-        data.message_index ?? existingMessage.message_index;
-      existingMessage.structured_data =
-        data.structured_data ?? existingMessage.structured_data;
-      existingMessage.timestamp = data.timestamp;
-      existingMessage.streaming = true;
-    } else {
-      activeMessages.value.push(
-        normalizeMessage(
-          data,
-          activeMessages.value.length,
-          activeConversationId.value,
-        ),
-      );
-    }
-  } else {
-    if (existingMessage && existingMessage.role === data.role) {
-      const lastMessage = existingMessage;
-      lastMessage.content = mergeModelContent(
-        lastMessage.content,
-        messageContent,
-      );
-      lastMessage.conversation_id =
-        data.conversation_id ?? lastMessage.conversation_id;
-      lastMessage.error_message =
-        data.error_message ?? lastMessage.error_message;
-      lastMessage.is_error = data.is_error ?? lastMessage.is_error;
-      lastMessage.message_id = data.message_id ?? lastMessage.message_id;
-      lastMessage.message_index =
-        data.message_index ?? lastMessage.message_index;
-      lastMessage.structured_data =
-        data.structured_data ?? lastMessage.structured_data;
-      lastMessage.timestamp = data.timestamp;
-      lastMessage.streaming = true;
-    } else {
-      activeMessages.value.push({
-        ...normalizeMessage(
-          data,
-          activeMessages.value.length,
-          activeConversationId.value,
-        ),
-        streaming: true,
-      });
-    }
-  }
-
-  if (activeConversationId.value) {
-    upsertConversation({
-      conversation_id: activeConversationId.value,
-      created_time: existingConversation?.created_time || data.timestamp,
-      id: existingConversation?.id || 0,
-      is_pinned: existingConversation?.is_pinned || false,
-      title: existingConversation?.title || draftConversationTitle.value,
-      updated_time: data.timestamp,
-    });
-  }
-
-  scrollToBottom();
+  abortTransientRequest();
 }
 
 async function fetchProviders() {
@@ -711,6 +514,8 @@ async function loadConversationDetail(conversationId: string) {
     activeMessages.value = detail.messages.map((item, index) =>
       normalizeMessage(item, index, activeConversationId.value),
     );
+    setTransientMessages([]);
+    transientRequestError.value = null;
     selectedProviderId.value = detail.provider_id;
     selectedModelId.value = detail.model_id;
     draftConversationTitle.value = detail.title;
@@ -733,6 +538,7 @@ async function selectConversation(conversationId: string) {
 
   stopStreaming();
   streamError.value = '';
+  setTransientMessages([]);
   isRenamingConversation.value = false;
   renameTitle.value = '';
   resetComposerState(true);
@@ -1245,79 +1051,52 @@ async function submitChat(
       regenerateMessageId === undefined ? submittedPromptText : undefined,
   });
 
-  const streamId = ++currentStreamId;
-  abortController?.abort();
-  abortController = new AbortController();
-  sending.value = true;
+  transientRequestError.value = null;
   streamError.value = '';
+  setTransientMessages([]);
+
   if (regenerateMessageId === undefined || regenerateSource === 'user') {
     prompt.value = '';
   }
-  if (
-    regenerateMessageId === undefined &&
-    !hasEditingMessageId &&
-    submittedPromptText
-  ) {
-    insertOptimisticUserMessage(submittedPromptText);
-  }
-  insertStreamingModelSkeleton();
+
+  const requestParams: AIChatProviderRequest =
+    regenerateMessageId === undefined
+      ? {
+          body: completionRequest,
+          localMessages: submittedPromptText
+            ? [createProviderUserMessage(submittedPromptText)]
+            : [],
+          mode: 'create',
+        }
+      : {
+          body: {
+            forwarded_props: completionRequest.forwarded_props,
+            thread_id: completionRequest.thread_id ?? targetConversationId,
+          },
+          conversationId: targetConversationId,
+          localMessages: [],
+          messageId: regenerateMessageId,
+          mode:
+            regenerateSource === 'user'
+              ? 'regenerate-from-message'
+              : 'regenerate-from-response',
+        };
+
+  onTransientRequest(requestParams);
+  await chatProvider.request.asyncHandler;
 
   let streamedConversationId = targetConversationId;
-  let streamBuffer = '';
-  const handleStreamMessage = (data: AIChatMessage) => {
-    if (data.conversation_id) {
-      streamedConversationId = data.conversation_id;
+  for (let index = transientMessagesState.value.length - 1; index >= 0; index -= 1) {
+    const conversationId = transientMessagesState.value[index]?.message.conversation_id;
+    if (conversationId) {
+      streamedConversationId = conversationId;
+      break;
     }
-    applyStreamMessage(data);
-  };
-  const streamOptions: AIChatStreamOptions = {
-    signal: abortController.signal,
-    onMessage: (chunk: string) => {
-      if (streamId !== currentStreamId) {
-        return;
-      }
+  }
 
-      streamBuffer = consumeBufferedSSEMessages(
-        `${streamBuffer}${chunk}`,
-        handleStreamMessage,
-      );
-    },
-  };
+  const requestError = transientRequestError.value;
 
-  try {
-    if (regenerateMessageId === undefined) {
-      await streamAIChatApi(completionRequest, streamOptions);
-    } else {
-      const regenerateConversationId = targetConversationId;
-      if (!regenerateConversationId) {
-        message.warning('当前会话不存在，无法重新生成');
-        return;
-      }
-      const regeneratePayload = {
-        forwarded_props: completionRequest.forwarded_props,
-        thread_id: completionRequest.thread_id ?? regenerateConversationId,
-      };
-
-      await (regenerateSource === 'user'
-        ? regenerateAIChatFromMessageApi(
-            regenerateConversationId,
-            regenerateMessageId,
-            regeneratePayload,
-            streamOptions,
-          )
-        : regenerateAIChatFromResponseApi(
-            regenerateConversationId,
-            regenerateMessageId,
-            regeneratePayload,
-            streamOptions,
-          ));
-    }
-    streamBuffer = consumeBufferedSSEMessages(
-      `${streamBuffer}\n\n`,
-      handleStreamMessage,
-    );
-
-    finalizeStreamingMessages();
+  if (!requestError) {
     await fetchConversations(false);
 
     if (streamedConversationId) {
@@ -1327,42 +1106,49 @@ async function submitChat(
       activeConversationId.value = conversations.value[0].conversation_id;
       await loadConversationDetail(conversations.value[0].conversation_id);
     }
-  } catch (error) {
-    if ((error as Error).name !== 'AbortError') {
-      streamError.value = (error as Error).message;
-      message.error(streamError.value);
 
-      if (
-        regenerateMessageId === undefined &&
-        editingMessageIndex === undefined &&
-        !activeConversationId.value
-      ) {
-        prompt.value = submittedPromptText;
-      }
+    setTransientMessages([]);
+  } else {
+    streamError.value = requestError;
+    message.error(requestError);
+
+    if (
+      regenerateMessageId === undefined &&
+      editingMessageIndex === undefined &&
+      !activeConversationId.value
+    ) {
+      prompt.value = submittedPromptText;
     }
-
-    finalizeStreamingMessages();
 
     if (streamedConversationId) {
       activeConversationId.value = streamedConversationId;
       await fetchConversations(false);
       await loadConversationDetail(streamedConversationId);
-    }
-  } finally {
-    if (streamId === currentStreamId) {
-      abortController = undefined;
-      sending.value = false;
-      editingMessage.value = undefined;
-      editingMessageIntent.value = 'save';
-      regeneratingMessageIndex.value = undefined;
+      setTransientMessages([]);
     }
   }
+
+  editingMessage.value = undefined;
+  editingMessageIntent.value = 'save';
+  regeneratingMessageIndex.value = undefined;
 }
 
 const activeConversation = computed(() => {
   return conversations.value.find(
     (item) => item.conversation_id === activeConversationId.value,
   );
+});
+
+const transientMessages = computed<ChatMessageItem[]>(() => {
+  const fallbackIndex = activeMessages.value.length;
+
+  return transientMessagesState.value.flatMap((info, index) => {
+    return buildTransientMessageItems(
+      info.message,
+      fallbackIndex + index,
+      info.status,
+    );
+  });
 });
 
 const displayMessages = computed<DisplayChatMessageItem[]>(() => {
@@ -1391,7 +1177,7 @@ const displayMessages = computed<DisplayChatMessageItem[]>(() => {
     pendingThinking = undefined;
   };
 
-  for (const message of activeMessages.value) {
+  for (const message of [...activeMessages.value, ...transientMessages.value]) {
     if (message.role === 'thinking') {
       const previousItem = items[items.length - 1];
       if (
@@ -2235,143 +2021,149 @@ const renderSenderFooter: NonNullable<SenderProps['footer']> = (_, info) => {
       vertical: false,
       wrap: 'wrap',
     },
-    [
-      h(
-        AFlex,
-        {
-          align: 'center',
-          gap: 'middle',
-          wrap: 'wrap',
-        },
-        [
-          renderFooterIconButton({
-            disabled: sending.value || !canCreateNewConversation.value,
-            icon: 'mdi:message-plus-outline',
-            onClick: createNewConversation,
-            title: '新建话题',
-          }),
-          h(
-            Popover,
-            { placement: 'topLeft', trigger: 'click' },
-            {
-              content: () => renderThinkingPopoverContent(),
-              default: () =>
-                renderFooterIconButton({
-                  disabled: sending.value,
-                  icon: 'mdi:head-lightbulb-outline',
-                  title: thinkingButtonTitle,
-                }),
-            },
-          ),
-          h(
-            Popover,
-            { placement: 'topLeft', trigger: 'click' },
-            {
-              content: () => renderWebSearchPopoverContent(),
-              default: () =>
-                renderFooterIconButton({
-                  disabled: sending.value,
-                  icon: 'mdi:web',
-                  title: `联网搜索：${webSearchButtonLabel.value}`,
-                }),
-            },
-          ),
-          h(
-            Popover,
-            { placement: 'topLeft', trigger: 'click' },
-            {
-              content: () => renderMcpPopoverContent(),
-              default: () =>
-                renderFooterIconButton({
-                  disabled: sending.value,
-                  icon: 'simple-icons:modelcontextprotocol',
-                  title:
-                    selectedMcpIds.value.length > 0
-                      ? `已选择 ${selectedMcpIds.value.length} 个 MCP`
-                      : '选择 MCP',
-                }),
-            },
-          ),
-          h(
-            Popover,
-            {
-              align: { overflow: { adjustX: false, adjustY: true } },
-              onOpenChange: handleQuickPhrasePopoverOpenChange,
-              open: quickPhrasePopoverOpen.value,
-              placement: 'topLeft',
-              trigger: 'click',
-            },
-            {
-              content: () => renderQuickPhrasePopoverContent(),
-              default: () =>
-                renderFooterIconButton({
-                  disabled: sending.value,
-                  icon: 'mdi:lightning-bolt-outline',
-                  title: '快捷短语',
-                }),
-            },
-          ),
-          renderFooterIconButton({
-            disabled: sending.value,
-            icon: 'mdi:cog-outline',
-            onClick: () => {
-              settingsModalApi.open();
-            },
-            title: hasAdvancedSettings.value
-              ? '参数设置（已调整）'
-              : '参数设置',
-          }),
-          renderFooterIconButton({
-            disabled: !canClearMessages.value,
-            icon: 'mdi:eraser-variant',
-            onClick: () => {
-              void clearMessages();
-            },
-            title: '清空消息',
-          }),
-        ],
-      ),
-      h(
-        AFlex,
-        {
-          align: 'center',
-          class: 'w-full md:w-auto',
-          gap: 'small',
-          justify: 'flex-end',
-          wrap: 'wrap',
-        },
-        [
-          composerHint.value
-            ? h(
-                'span',
-                {
-                  class:
-                    'inline-flex max-w-full whitespace-pre-wrap text-left text-xs leading-5 text-muted-foreground',
-                },
-                composerHint.value,
-              )
-            : null,
-          sending.value
-            ? h(LoadingButton, {
-                type: 'default',
-              })
-            : h(SendButton, {
-                class:
-                  'inline-flex size-8 items-center justify-center !rounded-md !px-0',
-                disabled:
-                  !selectedProviderId.value ||
-                  !selectedModelId.value ||
-                  !prompt.value.trim(),
-                icon: h(IconifyIcon, {
-                  class: 'size-4',
-                  icon: 'mdi:send',
-                }),
-                shape: 'default',
-                type: 'text',
+    {
+      default: () => [
+        h(
+          AFlex,
+          {
+            align: 'center',
+            gap: 'middle',
+            wrap: 'wrap',
+          },
+          {
+            default: () => [
+              renderFooterIconButton({
+                disabled: sending.value || !canCreateNewConversation.value,
+                icon: 'mdi:message-plus-outline',
+                onClick: createNewConversation,
+                title: '新建话题',
               }),
-        ],
-      ),
-    ],
+              h(
+                Popover,
+                { placement: 'topLeft', trigger: 'click' },
+                {
+                  content: () => renderThinkingPopoverContent(),
+                  default: () =>
+                    renderFooterIconButton({
+                      disabled: sending.value,
+                      icon: 'mdi:head-lightbulb-outline',
+                      title: thinkingButtonTitle,
+                    }),
+                },
+              ),
+              h(
+                Popover,
+                { placement: 'topLeft', trigger: 'click' },
+                {
+                  content: () => renderWebSearchPopoverContent(),
+                  default: () =>
+                    renderFooterIconButton({
+                      disabled: sending.value,
+                      icon: 'mdi:web',
+                      title: `联网搜索：${webSearchButtonLabel.value}`,
+                    }),
+                },
+              ),
+              h(
+                Popover,
+                { placement: 'topLeft', trigger: 'click' },
+                {
+                  content: () => renderMcpPopoverContent(),
+                  default: () =>
+                    renderFooterIconButton({
+                      disabled: sending.value,
+                      icon: 'simple-icons:modelcontextprotocol',
+                      title:
+                        selectedMcpIds.value.length > 0
+                          ? `已选择 ${selectedMcpIds.value.length} 个 MCP`
+                          : '选择 MCP',
+                    }),
+                },
+              ),
+              h(
+                Popover,
+                {
+                  align: { overflow: { adjustX: false, adjustY: true } },
+                  onOpenChange: handleQuickPhrasePopoverOpenChange,
+                  open: quickPhrasePopoverOpen.value,
+                  placement: 'topLeft',
+                  trigger: 'click',
+                },
+                {
+                  content: () => renderQuickPhrasePopoverContent(),
+                  default: () =>
+                    renderFooterIconButton({
+                      disabled: sending.value,
+                      icon: 'mdi:lightning-bolt-outline',
+                      title: '快捷短语',
+                    }),
+                },
+              ),
+              renderFooterIconButton({
+                disabled: sending.value,
+                icon: 'mdi:cog-outline',
+                onClick: () => {
+                  settingsModalApi.open();
+                },
+                title: hasAdvancedSettings.value
+                  ? '参数设置（已调整）'
+                  : '参数设置',
+              }),
+              renderFooterIconButton({
+                disabled: !canClearMessages.value,
+                icon: 'mdi:eraser-variant',
+                onClick: () => {
+                  void clearMessages();
+                },
+                title: '清空消息',
+              }),
+            ],
+          },
+        ),
+        h(
+          AFlex,
+          {
+            align: 'center',
+            class: 'w-full md:w-auto',
+            gap: 'small',
+            justify: 'flex-end',
+            wrap: 'wrap',
+          },
+          {
+            default: () => [
+              composerHint.value
+                ? h(
+                    'span',
+                    {
+                      class:
+                        'inline-flex max-w-full whitespace-pre-wrap text-left text-xs leading-5 text-muted-foreground',
+                    },
+                    composerHint.value,
+                  )
+                : null,
+              sending.value
+                ? h(LoadingButton, {
+                    type: 'default',
+                  })
+                : h(SendButton, {
+                    class:
+                      'inline-flex size-8 items-center justify-center !rounded-md !px-0',
+                    disabled:
+                      !selectedProviderId.value ||
+                      !selectedModelId.value ||
+                      !prompt.value.trim(),
+                    icon: h(IconifyIcon, {
+                      class: 'size-4',
+                      icon: 'mdi:send',
+                    }),
+                    shape: 'default',
+                    type: 'text',
+                  }),
+            ],
+          },
+        ),
+      ],
+    },
   );
 };
 
@@ -2458,7 +2250,7 @@ onActivated(async () => {
 });
 
 onBeforeUnmount(() => {
-  abortController?.abort();
+  abortTransientRequest();
 });
 </script>
 
@@ -2470,35 +2262,17 @@ onBeforeUnmount(() => {
     :right-width="80"
   >
     <template #left>
-      <aside
-        class="mr-2 flex h-full min-h-0 flex-col overflow-hidden rounded-[var(--radius)] border border-border bg-card"
-      >
-        <div class="flex-1 overflow-y-auto p-3">
-          <ASpin
-            v-if="sidebarLoading && conversations.length === 0"
-            class="block py-10"
-          />
-          <template v-else>
-            <Conversations
-              :active-key="activeConversationId"
-              :creation="conversationCreation"
-              :items="conversationItems"
-              :menu="getConversationListMenu"
-              :on-active-change="handleConversationActiveChange"
-            />
-            <VbenButton
-              v-if="hasMoreConversations"
-              block
-              size="sm"
-              variant="outline"
-              :loading="sidebarMoreLoading"
-              @click="loadMoreConversations"
-            >
-              加载更多
-            </VbenButton>
-          </template>
-        </div>
-      </aside>
+      <ChatSidebar
+        :active-key="activeConversationId"
+        :creation="conversationCreation"
+        :has-more="hasMoreConversations"
+        :items="conversationItems || []"
+        :loading="sidebarLoading"
+        :loading-more="sidebarMoreLoading"
+        :menu="getConversationListMenu"
+        :on-active-change="handleConversationActiveChange"
+        :on-load-more="loadMoreConversations"
+      />
     </template>
 
     <section
@@ -2724,22 +2498,18 @@ onBeforeUnmount(() => {
         </template>
       </div>
 
-      <div class="bg-card px-5 pb-5 pt-4 md:px-6 md:pb-6 md:pt-4">
-        <div class="relative">
-          <Sender
-            :auto-size="senderAutoSize"
-            :disabled="sending"
-            :footer="renderSenderFooter"
-            :loading="sending"
-            :on-cancel="stopStreaming"
-            :on-change="handleSenderChange"
-            :on-submit="handleSenderSubmit"
-            placeholder="在这里输入消息，按 Enter 发送"
-            :suffix="false"
-            :value="prompt"
-          />
-        </div>
-      </div>
+      <ChatSender
+        :auto-size="senderAutoSize"
+        :disabled="sending"
+        :footer="renderSenderFooter"
+        :loading="sending"
+        :on-cancel="stopStreaming"
+        :on-change="handleSenderChange"
+        :on-submit="handleSenderSubmit"
+        placeholder="在这里输入消息，按 Enter 发送"
+        :suffix="false"
+        :value="prompt"
+      />
     </section>
 
     <SettingsModal content-class="px-4 py-4 md:px-5 md:py-5">

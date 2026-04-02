@@ -1,28 +1,20 @@
 <script setup lang="ts">
-import type { VbenFormProps } from '@vben/common-ui';
+import type { VbenFormProps } from "@vben/common-ui";
 
-import type {
-  OnActionClickParams,
-  VxeTableGridOptions,
-} from '#/adapter/vxe-table';
-import type { AIMcpParams, AIMcpResult } from '#/plugins/ai/api';
+import type { OnActionClickParams, VxeTableGridOptions } from "#/adapter/vxe-table";
+import type { AIMcpParams, AIMcpResult } from "#/plugins/ai/api";
 
-import { computed, ref } from 'vue';
+import { computed, ref } from "vue";
 
-import { Page, useVbenModal, VbenButton } from '@vben/common-ui';
-import { MaterialSymbolsAdd } from '@vben/icons';
-import { $t } from '@vben/locales';
+import { Page, useVbenModal, VbenButton } from "@vben/common-ui";
+import { MaterialSymbolsAdd } from "@vben/icons";
+import { $t } from "@vben/locales";
 
-import { message } from 'antdv-next';
+import { message } from "antdv-next";
 
-import { useVbenForm } from '#/adapter/form';
-import { useVbenVxeGrid } from '#/adapter/vxe-table';
-import {
-  createAIMcpApi,
-  deleteAIMcpApi,
-  getAIMcpListApi,
-  updateAIMcpApi,
-} from '#/plugins/ai/api';
+import { useVbenForm } from "#/adapter/form";
+import { useVbenVxeGrid } from "#/adapter/vxe-table";
+import { createAIMcpApi, deleteAIMcpApi, getAIMcpListApi, updateAIMcpApi } from "#/plugins/ai/api";
 
 import {
   formatArgsInput,
@@ -32,32 +24,32 @@ import {
   parseEnvInput,
   queryMcpSchema,
   useMcpColumns,
-} from './data';
+} from "./data";
 
 const formOptions: VbenFormProps = {
   collapsed: true,
   showCollapseButton: true,
   submitButtonOptions: {
-    content: $t('common.form.query'),
+    content: $t("common.form.query"),
   },
   schema: queryMcpSchema,
 };
 
 const gridOptions: VxeTableGridOptions<AIMcpResult> = {
   rowConfig: {
-    keyField: 'id',
+    keyField: "id",
   },
   checkboxConfig: {
     highlight: true,
   },
-  height: 'auto',
+  height: "auto",
   exportConfig: {},
   printConfig: {},
   toolbarConfig: {
     custom: true,
     refresh: true,
     refreshOptions: {
-      code: 'query',
+      code: "query",
     },
     zoom: true,
   },
@@ -86,17 +78,17 @@ function onRefresh() {
 
 function onActionClick({ code, row }: OnActionClickParams<AIMcpResult>) {
   switch (code) {
-    case 'delete': {
+    case "delete": {
       deleteAIMcpApi(row.id).then(() => {
         message.success({
-          content: $t('ui.actionMessage.deleteSuccess', [row.name]),
-          key: 'action_process_msg',
+          content: $t("ui.actionMessage.deleteSuccess", [row.name]),
+          key: "action_process_msg",
         });
         onRefresh();
       });
       break;
     }
-    case 'edit': {
+    case "edit": {
       modalApi
         .setData({
           ...row,
@@ -110,12 +102,12 @@ function onActionClick({ code, row }: OnActionClickParams<AIMcpResult>) {
 }
 
 const [Form, formApi] = useVbenForm({
-  layout: 'vertical',
+  layout: "vertical",
   showDefaultActions: false,
   schema: mcpSchema,
 });
 
-type AIMcpFormValues = Omit<AIMcpParams, 'args' | 'env'> & {
+type AIMcpFormValues = Omit<AIMcpParams, "args" | "env"> & {
   args?: null | string;
   env?: null | string;
   id?: number;
@@ -125,8 +117,8 @@ const formData = ref<AIMcpFormValues>();
 
 const modalTitle = computed(() => {
   return formData.value?.id
-    ? $t('ui.actionTitle.edit', ['MCP'])
-    : $t('ui.actionTitle.create', ['MCP']);
+    ? $t("ui.actionTitle.edit", ["MCP"])
+    : $t("ui.actionTitle.create", ["MCP"]);
 });
 
 const [Modal, modalApi] = useVbenModal({
@@ -144,7 +136,7 @@ const [Modal, modalApi] = useVbenModal({
       const payload: AIMcpParams = {
         command: data.command.trim(),
         description: data.description?.trim() || undefined,
-        env: parseEnvInput(data.env, '环境变量'),
+        env: parseEnvInput(data.env, "环境变量"),
         args: parseArgsInput(data.args),
         headers: data.headers?.trim() || undefined,
         name: data.name,
@@ -157,7 +149,7 @@ const [Modal, modalApi] = useVbenModal({
       await (formData.value?.id
         ? updateAIMcpApi(formData.value.id, payload)
         : createAIMcpApi(payload));
-      message.success($t('ui.actionMessage.operationSuccess'));
+      message.success($t("ui.actionMessage.operationSuccess"));
       await modalApi.close();
       onRefresh();
     } catch (error) {
@@ -191,7 +183,7 @@ const [Modal, modalApi] = useVbenModal({
         </VbenButton>
       </template>
     </Grid>
-    <Modal :title="modalTitle">
+    <Modal content-class="px-4 py-4 md:px-5 md:py-5" :title="modalTitle">
       <Form />
     </Modal>
   </Page>

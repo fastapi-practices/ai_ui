@@ -3,6 +3,7 @@ import type { Recordable } from '@vben/types';
 import type {
   AIChatCompletionRequest,
   AIChatRegenerateRequest,
+  AGUISSEChunk,
   RawAIConversationDetail,
   RawAIConversationListItem,
 } from './contracts';
@@ -29,6 +30,7 @@ export type {
   AGUIFunctionCall,
   AGUIMessage,
   AGUIReasoningMessage,
+  AGUISSEChunk,
   AGUISystemMessage,
   AGUITextInputContent,
   AGUIToolCall,
@@ -235,8 +237,20 @@ export interface AIQuickPhraseResult extends AIQuickPhraseParams {
 }
 
 export interface AIChatStreamOptions {
-  onMessage: (chunk: string) => void;
+  onChunk: (chunk: AGUISSEChunk) => void;
   signal?: AbortSignal;
+}
+
+export type AIChatTransportMode =
+  | 'create'
+  | 'regenerate-from-message'
+  | 'regenerate-from-response';
+
+export interface AIChatTransportRequest {
+  body: AIChatCompletionRequest | AIChatRegenerateRequest;
+  conversationId?: string;
+  messageId?: number;
+  mode: AIChatTransportMode;
 }
 
 const { apiURL } = useAppConfig(import.meta.env, import.meta.env.PROD);
@@ -248,7 +262,7 @@ function joinApiUrl(baseUrl: string, url: string) {
   return `${baseUrl.replace(/\/+$/, '')}/${url.replace(/^\/+/, '')}`;
 }
 
-async function readErrorMessage(response: Response) {
+export async function readAIChatErrorMessage(response: Response) {
   const text = await response.text();
 
   try {
@@ -263,6 +277,37 @@ async function readErrorMessage(response: Response) {
   } catch {
     return text || `HTTP ${response.status}`;
   }
+}
+
+export function resolveAIChatTransportUrl(request: AIChatTransportRequest) {
+  switch (request.mode) {
+    case 'create': {
+      return '/api/v1/chat/completions';
+    }
+    case 'regenerate-from-message': {
+      return `/api/v1/conversations/${request.conversationId}/messages/${request.messageId}/regenerate`;
+    }
+    case 'regenerate-from-response': {
+      return `/api/v1/conversations/${request.conversationId}/responses/${request.messageId}/regenerate`;
+    }
+  }
+}
+
+export function resolveAIChatApiUrl(url: string) {
+  return joinApiUrl(apiURL, url);
+}
+
+export function getAIChatRequestHeaders() {
+  const accessStore = useAccessStore();
+
+  return {
+    Accept: 'text/event-stream, application/json',
+    'Accept-Language': preferences.app.locale,
+    Authorization: accessStore.accessToken
+      ? `Bearer ${accessStore.accessToken}`
+      : '',
+    'Content-Type': 'application/json;charset=utf-8',
+  };
 }
 
 export async function getAIProviderDetailApi(pk: number) {
@@ -479,27 +524,18 @@ export async function deleteAIQuickPhraseApi(pk: number) {
 }
 
 async function postAIChatSSE(
-  url: string,
-  data: AIChatCompletionRequest | AIChatRegenerateRequest,
+  request: AIChatTransportRequest,
   options: AIChatStreamOptions,
 ) {
-  const accessStore = useAccessStore();
-  const response = await fetch(joinApiUrl(apiURL, url), {
-    body: JSON.stringify(data),
-    headers: {
-      Accept: 'text/event-stream, application/json',
-      Authorization: accessStore.accessToken
-        ? `Bearer ${accessStore.accessToken}`
-        : '',
-      'Accept-Language': preferences.app.locale,
-      'Content-Type': 'application/json;charset=utf-8',
-    },
+  const response = await fetch(resolveAIChatApiUrl(resolveAIChatTransportUrl(request)), {
+    body: JSON.stringify(request.body),
+    headers: getAIChatRequestHeaders(),
     method: 'POST',
     signal: options.signal,
   });
 
   if (!response.ok) {
-    throw new Error(await readErrorMessage(response));
+    throw new Error(await readAIChatErrorMessage(response));
   }
 
   const reader = response.body?.getReader();
@@ -512,23 +548,37 @@ async function postAIChatSSE(
   while (true) {
     const { done, value } = await reader.read();
     if (done) {
-      const rest = decoder.decode(new Uint8Array(0), { stream: false });
-      if (rest) {
-        options.onMessage(rest);
-      }
       reader.releaseLock?.();
       break;
     }
 
-    options.onMessage(decoder.decode(value, { stream: true }));
+    const payload = decoder.decode(value, { stream: true });
+    if (payload) {
+      options.onChunk({
+        data: payload,
+      });
+    }
   }
+}
+
+export async function streamAIChatTransport(
+  request: AIChatTransportRequest,
+  options: AIChatStreamOptions,
+) {
+  return postAIChatSSE(request, options);
 }
 
 export async function streamAIChatApi(
   data: AIChatCompletionRequest,
   options: AIChatStreamOptions,
 ) {
-  return postAIChatSSE('/api/v1/chat/completions', data, options);
+  return streamAIChatTransport(
+    {
+      body: data,
+      mode: 'create',
+    },
+    options,
+  );
 }
 
 export async function regenerateAIChatFromMessageApi(
@@ -537,9 +587,13 @@ export async function regenerateAIChatFromMessageApi(
   data: AIChatRegenerateRequest,
   options: AIChatStreamOptions,
 ) {
-  return postAIChatSSE(
-    `/api/v1/conversations/${conversationId}/messages/${messageId}/regenerate`,
-    data,
+  return streamAIChatTransport(
+    {
+      body: data,
+      conversationId,
+      messageId,
+      mode: 'regenerate-from-message',
+    },
     options,
   );
 }
@@ -550,9 +604,13 @@ export async function regenerateAIChatFromResponseApi(
   data: AIChatRegenerateRequest,
   options: AIChatStreamOptions,
 ) {
-  return postAIChatSSE(
-    `/api/v1/conversations/${conversationId}/responses/${messageId}/regenerate`,
-    data,
+  return streamAIChatTransport(
+    {
+      body: data,
+      conversationId,
+      messageId,
+      mode: 'regenerate-from-response',
+    },
     options,
   );
 }

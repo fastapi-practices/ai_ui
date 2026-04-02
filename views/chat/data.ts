@@ -1,15 +1,25 @@
 import type { AIChatMessage, AIChatMessageDetail } from '#/plugins/ai/api';
 
 import {
+  consumeBufferedAGUIChunks,
   createAGUIStreamAccumulator,
-  parseAGUIStreamEventFromSSE,
-  toAIChatMessageFromAGUIEvent,
 } from '#/plugins/ai/api/chat-compat';
 
 export type ChatMessageItem = AIChatMessageDetail & {
   id: string;
   streaming?: boolean;
 };
+
+export interface AIChatProviderMessage {
+  content: string;
+  conversation_id?: null | string;
+  error_message?: null | string;
+  is_error?: boolean;
+  message_id?: null | string;
+  reasoning?: string;
+  role: 'assistant' | 'user';
+  timestamp: string;
+}
 
 export function buildMessageId(seedValue?: null | number | string) {
   return `${seedValue ?? Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -107,72 +117,149 @@ export function normalizeMessage(
   };
 }
 
-type ParsedSSEBlock = {
-  data: unknown;
-};
-
 const aguiStreamAccumulator = createAGUIStreamAccumulator();
 
-function parseSSEBlock(segment: string): null | ParsedSSEBlock {
-  const lines = segment
-    .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter(Boolean);
+export function createProviderSeedMessage(
+  timestamp = new Date().toISOString(),
+): AIChatProviderMessage {
+  return {
+    content: '',
+    role: 'assistant',
+    timestamp,
+  };
+}
 
-  if (lines.length === 0) {
-    return null;
+export function createProviderUserMessage(
+  content: string,
+  timestamp = new Date().toISOString(),
+): AIChatProviderMessage {
+  return {
+    content,
+    role: 'user',
+    timestamp,
+  };
+}
+
+export function normalizeProviderMessage(
+  message: AIChatProviderMessage,
+  fallbackIndex: number,
+): ChatMessageItem[] {
+  const items: ChatMessageItem[] = [];
+  const baseId = message.message_id ?? `provider-${fallbackIndex}`;
+
+  if (message.reasoning) {
+    const thinking = normalizeMessage(
+      {
+        content: message.reasoning,
+        conversation_id: message.conversation_id,
+        role: 'thinking',
+        timestamp: message.timestamp,
+      },
+      fallbackIndex,
+      message.conversation_id,
+    );
+    thinking.id = `${baseId}-thinking`;
+    items.push(thinking);
   }
 
-  const dataLines: string[] = [];
+  const role = message.role === 'assistant' ? 'model' : 'user';
+  const chatMessage = normalizeMessage(
+    {
+      content: message.content,
+      conversation_id: message.conversation_id,
+      error_message: message.error_message,
+      is_error: message.is_error,
+      role,
+      timestamp: message.timestamp,
+    },
+    fallbackIndex,
+    message.conversation_id,
+  );
+  chatMessage.id = `${baseId}-${role}`;
+  items.push(chatMessage);
 
-  for (const line of lines) {
-    if (line.startsWith(':')) {
-      continue;
-    }
+  return items;
+}
 
-    if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trim());
-    }
-  }
-
-  if (dataLines.length === 0) {
-    return null;
-  }
-
-  try {
-    return {
-      data: JSON.parse(dataLines.join('\n')),
-    };
-  } catch {
-    return null;
-  }
+export function mergeStreamMessage(
+  current: AIChatProviderMessage | undefined,
+  incoming: AIChatProviderMessage,
+): AIChatProviderMessage {
+  return {
+    ...incoming,
+    content: mergeModelContent(current?.content ?? '', incoming.content),
+    reasoning: mergeModelContent(
+      current?.reasoning ?? '',
+      incoming.reasoning ?? '',
+    ),
+  };
 }
 
 export function consumeBufferedSSEMessages(
   buffer: string,
   onMessage: (data: AIChatMessage) => void,
 ) {
-  const segments = buffer.split(/\r?\n\r?\n/u);
-  const rest = segments.pop() || '';
-
-  for (const segment of segments) {
-    const parsedBlock = parseSSEBlock(segment);
-    if (!parsedBlock) {
-      continue;
-    }
-
-    const aguiEvent = parseAGUIStreamEventFromSSE(parsedBlock.data);
-    if (aguiEvent) {
-      const aguiMessage = toAIChatMessageFromAGUIEvent(
-        aguiEvent,
-        aguiStreamAccumulator,
-      );
-      if (aguiMessage) {
-        onMessage(aguiMessage);
+  return consumeBufferedAGUIChunks(
+    buffer,
+    aguiStreamAccumulator,
+    ({ message }) => {
+      if (message) {
+        onMessage(message);
       }
-      continue;
-    }
+    },
+  );
+}
+
+export function providerMessageToChatMessage(
+  originMessage: AIChatProviderMessage | undefined,
+  incoming: AIChatMessage,
+) {
+  const nextMessage: AIChatProviderMessage = {
+    content:
+      incoming.role === 'thinking'
+        ? originMessage?.content ?? ''
+        : incoming.content,
+    conversation_id:
+      incoming.conversation_id ?? originMessage?.conversation_id ?? null,
+    error_message: incoming.error_message ?? originMessage?.error_message,
+    is_error: incoming.is_error ?? false,
+    message_id:
+      incoming.message_id === undefined || incoming.message_id === null
+        ? originMessage?.message_id
+        : String(incoming.message_id),
+    reasoning:
+      incoming.role === 'thinking'
+        ? incoming.content
+        : originMessage?.reasoning ?? '',
+    role: incoming.role === 'user' ? 'user' : 'assistant',
+    timestamp: incoming.timestamp,
+  };
+
+  if (incoming.role === 'thinking' || incoming.role === 'model') {
+    return mergeStreamMessage(originMessage, nextMessage);
   }
 
-  return rest;
+  return nextMessage;
+}
+
+export function buildTransientMessageItems(
+  providerMessage: AIChatProviderMessage | undefined,
+  fallbackIndex: number,
+  status: 'abort' | 'error' | 'loading' | 'local' | 'success' | 'updating',
+) {
+  if (!providerMessage) {
+    return [];
+  }
+
+  return normalizeProviderMessage(providerMessage, fallbackIndex).map((item) => {
+    if (item.role === 'model' || item.role === 'thinking') {
+      return {
+        ...item,
+        is_error: providerMessage.is_error ?? item.is_error,
+        streaming: status === 'loading' || status === 'updating',
+      };
+    }
+
+    return item;
+  });
 }
