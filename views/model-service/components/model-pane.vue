@@ -5,26 +5,31 @@ import type {
   VxeTableGridOptions,
 } from '#/adapter/vxe-table';
 import type {
+  AIBatchCreateModelsParams,
   AIModelParams,
   AIModelResult,
+  AIProviderModelResult,
   AIProviderResult,
 } from '#/plugins/ai/api';
 import type { PaginationResult } from '#/types';
 
 import { computed, ref } from 'vue';
 
-import { useVbenModal, VbenButton } from '@vben/common-ui';
+import { confirm, useVbenModal, VbenButton } from '@vben/common-ui';
 import { MaterialSymbolsAdd } from '@vben/icons';
 import { $t } from '@vben/locales';
 
-import { Empty as AEmpty, message } from 'antdv-next';
+import { message } from 'antdv-next';
 
 import { useVbenForm } from '#/adapter/form';
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import {
+  batchCreateAIModelApi,
   createAIModelApi,
   deleteAIModelApi,
   getAIModelListApi,
+  getAIProviderModelsApi,
+  getAllAIModelApi,
   syncAIProviderModelsApi,
   updateAIModelApi,
 } from '#/plugins/ai/api';
@@ -32,7 +37,6 @@ import {
 import {
   createModelSchema,
   queryModelSchema,
-  SYNCABLE_PROVIDER_TYPES,
   useModelColumns,
 } from '../data';
 
@@ -108,6 +112,63 @@ const [Grid, gridApi] = useVbenVxeGrid({
   gridOptions,
 });
 
+const batchModalOpen = ref(false);
+const batchLoading = ref(false);
+const batchSubmitting = ref(false);
+const batchKeyword = ref('');
+const providerModels = ref<AIProviderModelResult[]>([]);
+const existingModelIds = ref<string[]>([]);
+const selectedProviderModelIds = ref<string[]>([]);
+
+const existingModelIdSet = computed(() => new Set(existingModelIds.value));
+const canSyncProviderModels = computed(() => {
+  return Boolean(props.provider);
+});
+const filteredProviderModels = computed(() => {
+  const keyword = batchKeyword.value.trim().toLowerCase();
+
+  if (!keyword) {
+    return providerModels.value;
+  }
+
+  return providerModels.value.filter((item) =>
+    item.id.toLowerCase().includes(keyword),
+  );
+});
+const selectableFilteredModelIds = computed(() => {
+  return filteredProviderModels.value
+    .filter((item) => !existingModelIdSet.value.has(item.id))
+    .map((item) => item.id);
+});
+const selectableModelCount = computed(() => {
+  return providerModels.value.filter(
+    (item) => !existingModelIdSet.value.has(item.id),
+  ).length;
+});
+const isAllFilteredSelected = computed(() => {
+  const availableIds = selectableFilteredModelIds.value;
+  return (
+    availableIds.length > 0 &&
+    availableIds.every((item) => selectedProviderModelIds.value.includes(item))
+  );
+});
+const isPartiallyFilteredSelected = computed(() => {
+  const availableIds = selectableFilteredModelIds.value;
+  if (availableIds.length === 0) {
+    return false;
+  }
+
+  const selectedCount = availableIds.filter((item) =>
+    selectedProviderModelIds.value.includes(item),
+  ).length;
+
+  return selectedCount > 0 && selectedCount < availableIds.length;
+});
+const selectAllFiltered = computed({
+  get: () => isAllFilteredSelected.value,
+  set: (checked: boolean) => handleSelectAllFiltered(checked),
+});
+
 function onRefresh() {
   gridApi.query();
 }
@@ -131,14 +192,111 @@ function onActionClick({ code, row }: OnActionClickParams<AIModelResult>) {
   }
 }
 
+function isExistingModel(modelId: string) {
+  return existingModelIdSet.value.has(modelId);
+}
+
+function resetBatchAddState() {
+  batchKeyword.value = '';
+  providerModels.value = [];
+  existingModelIds.value = [];
+  selectedProviderModelIds.value = [];
+}
+
+function handleBatchModalCancel() {
+  batchModalOpen.value = false;
+  resetBatchAddState();
+}
+
+function handleSelectAllFiltered(checked: boolean) {
+  const nextSelectedIds = new Set(selectedProviderModelIds.value);
+
+  for (const modelId of selectableFilteredModelIds.value) {
+    if (checked) {
+      nextSelectedIds.add(modelId);
+    } else {
+      nextSelectedIds.delete(modelId);
+    }
+  }
+
+  selectedProviderModelIds.value = [...nextSelectedIds];
+}
+
 async function syncModels() {
-  if (!props.provider || !SYNCABLE_PROVIDER_TYPES.has(props.provider.type)) {
+  if (!canSyncProviderModels.value || !props.provider) {
     return;
   }
 
   await syncAIProviderModelsApi(props.provider.id);
   message.success($t('ui.actionMessage.operationSuccess'));
   onRefresh();
+}
+
+function confirmSyncModels() {
+  if (!canSyncProviderModels.value || !props.provider) {
+    return;
+  }
+
+  confirm({
+    content: '同步将覆盖当前模型列表，是否继续？',
+    icon: 'warning',
+  }).then(async () => {
+    await syncModels();
+  });
+}
+
+async function openBatchAddModal() {
+  if (!props.provider || !canSyncProviderModels.value) {
+    return;
+  }
+
+  batchModalOpen.value = true;
+  batchLoading.value = true;
+  resetBatchAddState();
+
+  try {
+    const [remoteProviderModels, localModels] = await Promise.all([
+      getAIProviderModelsApi(props.provider.id),
+      getAllAIModelApi({ provider_id: props.provider.id }),
+    ]);
+
+    providerModels.value = remoteProviderModels;
+    existingModelIds.value = localModels.map((item) => item.model_id);
+  } finally {
+    batchLoading.value = false;
+  }
+}
+
+async function submitBatchAddModels() {
+  if (!props.provider) {
+    return;
+  }
+
+  if (selectedProviderModelIds.value.length === 0) {
+    message.warning('请至少选择一个模型');
+    return;
+  }
+
+  const providerId = props.provider.id;
+  const payload: AIBatchCreateModelsParams = {
+    items: selectedProviderModelIds.value.map((modelId) => ({
+      model_id: modelId,
+      provider_id: providerId,
+      remark: null,
+      status: 1,
+    })),
+  };
+
+  batchSubmitting.value = true;
+
+  try {
+    await batchCreateAIModelApi(payload);
+    message.success($t('ui.actionMessage.operationSuccess'));
+    handleBatchModalCancel();
+    onRefresh();
+  } finally {
+    batchSubmitting.value = false;
+  }
 }
 
 const [Form, formApi] = useVbenForm({
@@ -212,7 +370,7 @@ const [Modal, modalApi] = useVbenModal({
       v-if="!provider"
       class="flex min-h-[320px] flex-1 items-center justify-center"
     >
-      <AEmpty description="请先新增并选择供应商" />
+      <a-empty description="请先新增并选择供应商" />
     </div>
 
     <template v-else>
@@ -224,14 +382,113 @@ const [Modal, modalApi] = useVbenModal({
           </VbenButton>
           <VbenButton
             class="ml-2"
-            v-if="SYNCABLE_PROVIDER_TYPES.has(provider.type)"
+            v-if="canSyncProviderModels"
             variant="outline"
-            @click="syncModels"
+            @click="openBatchAddModal"
+          >
+            批量添加模型
+          </VbenButton>
+          <VbenButton
+            class="ml-2"
+            v-if="canSyncProviderModels"
+            variant="outline"
+            @click="confirmSyncModels"
           >
             同步模型
           </VbenButton>
         </template>
       </Grid>
+      <a-modal
+        v-model:open="batchModalOpen"
+        destroy-on-close
+        :confirm-loading="batchSubmitting"
+        :mask-closable="false"
+        title="批量添加模型"
+        width="720px"
+        @cancel="handleBatchModalCancel"
+        @ok="submitBatchAddModels"
+      >
+        <div class="flex flex-col gap-4">
+          <div class="flex flex-col gap-3 md:flex-row md:items-center">
+            <a-input
+              v-model:value="batchKeyword"
+              allow-clear
+              class="md:max-w-[320px]"
+              placeholder="搜索模型 ID"
+            />
+            <div class="flex items-center gap-3 text-xs text-muted-foreground">
+              <a-checkbox
+                :disabled="selectableFilteredModelIds.length === 0"
+                :indeterminate="isPartiallyFilteredSelected"
+                v-model:checked="selectAllFiltered"
+              >
+                选择当前筛选结果
+              </a-checkbox>
+              <span>可添加 {{ selectableModelCount }} 个</span>
+              <span>已选择 {{ selectedProviderModelIds.length }} 个</span>
+            </div>
+          </div>
+
+          <div
+            class="min-h-[320px] rounded-lg border border-border bg-background/80"
+          >
+            <div
+              v-if="batchLoading"
+              class="flex min-h-[320px] items-center justify-center"
+            >
+              <a-spin />
+            </div>
+
+            <div
+              v-else-if="providerModels.length === 0"
+              class="flex min-h-[320px] items-center justify-center"
+            >
+              <a-empty description="供应商暂无可用模型" />
+            </div>
+
+            <div
+              v-else-if="filteredProviderModels.length === 0"
+              class="flex min-h-[320px] items-center justify-center"
+            >
+              <a-empty description="没有匹配的模型" />
+            </div>
+
+            <a-checkbox-group
+              v-else
+              v-model:value="selectedProviderModelIds"
+              class="block h-full w-full"
+            >
+              <div class="h-full w-full max-h-[420px] overflow-y-auto">
+                <div class="w-full space-y-2 p-3">
+                  <div
+                    v-for="item in filteredProviderModels"
+                    :key="item.id"
+                    class="flex w-full items-center justify-between gap-3 rounded-lg border border-border px-3 py-2 transition-colors"
+                    :class="
+                      isExistingModel(item.id)
+                        ? 'bg-muted/40 opacity-70'
+                        : 'hover:border-primary/40 hover:bg-accent/30'
+                    "
+                  >
+                    <a-checkbox
+                      :disabled="isExistingModel(item.id)"
+                      :value="item.id"
+                    >
+                      <span class="break-all text-sm text-foreground">
+                        {{ item.id }}
+                      </span>
+                    </a-checkbox>
+                    <div class="flex shrink-0 items-center gap-2">
+                      <a-tag v-if="isExistingModel(item.id)">已添加</a-tag>
+                      <a-tag v-else color="blue">可添加</a-tag>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </a-checkbox-group>
+          </div>
+        </div>
+      </a-modal>
       <Modal :title="modalTitle">
         <Form />
       </Modal>

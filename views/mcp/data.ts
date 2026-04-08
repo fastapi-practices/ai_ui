@@ -1,16 +1,8 @@
 import type { VbenFormSchema } from '#/adapter/form';
 import type { OnActionClickFn, VxeGridProps } from '#/adapter/vxe-table';
-import type { AIMcpResult } from '#/plugins/ai/api';
+import type { AIMcpParams, AIMcpResult } from '#/plugins/ai/api';
 
 import { $t } from '@vben/locales';
-
-function buildFieldAttrs(fieldName: string) {
-  return {
-    autocomplete: 'off',
-    id: `ai-mcp-${fieldName}`,
-    name: fieldName,
-  };
-}
 
 export const MCP_TYPE_OPTIONS = [
   { label: 'stdio', value: 0 },
@@ -24,10 +16,81 @@ export const MCP_TYPE_TAG_OPTIONS = [
   { color: 'success', label: 'streamable_http', value: 2 },
 ];
 
+const MCP_TYPE_NAME_MAP = {
+  stdio: 0,
+  sse: 1,
+  http: 2,
+  'streamable-http': 2,
+  streamablehttp: 2,
+  streamable_http: 2,
+} as const;
+
+const MCP_IMPORT_DEMOS = [
+  {
+    description: 'Example JSON (stdio)',
+    label: 'stdio',
+    value: JSON.stringify(
+      {
+        mcpServers: {
+          'stdio-server-example': {
+            command: 'npx',
+            args: ['-y', 'mcp-server-example'],
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  },
+  {
+    description: 'Example JSON (sse)',
+    label: 'sse',
+    value: JSON.stringify(
+      {
+        mcpServers: {
+          'sse-server-example': {
+            type: 'sse',
+            url: 'http://localhost:3000',
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  },
+  {
+    description: 'Example JSON (streamableHttp)',
+    label: 'streamableHttp',
+    value: JSON.stringify(
+      {
+        mcpServers: {
+          'streamable-http-example': {
+            type: 'streamableHttp',
+            url: 'http://localhost:3001',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: 'Bearer your-token',
+            },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  },
+] as const;
+
+export const MCP_IMPORT_PLACEHOLDER = MCP_IMPORT_DEMOS.map((item) => {
+  return [`${item.description}:`, ...item.value.split('\n')]
+    .map((line) => {
+      return `// ${line}`;
+    })
+    .join('\n');
+}).join('\n\n');
+
 export const queryMcpSchema: VbenFormSchema[] = [
   {
     component: 'Input',
-    componentProps: buildFieldAttrs('name-query'),
     fieldName: 'name',
     label: 'MCP 名称',
   },
@@ -35,7 +98,6 @@ export const queryMcpSchema: VbenFormSchema[] = [
     component: 'Select',
     componentProps: {
       allowClear: true,
-      ...buildFieldAttrs('type-query'),
       options: MCP_TYPE_OPTIONS,
     },
     fieldName: 'type',
@@ -88,7 +150,6 @@ export function useMcpColumns(
 export const mcpSchema: VbenFormSchema[] = [
   {
     component: 'Input',
-    componentProps: buildFieldAttrs('name'),
     fieldName: 'name',
     label: 'MCP 名称',
     rules: 'required',
@@ -107,7 +168,6 @@ export const mcpSchema: VbenFormSchema[] = [
   },
   {
     component: 'Input',
-    componentProps: buildFieldAttrs('url'),
     fieldName: 'url',
     label: '端点链接',
     dependencies: {
@@ -117,7 +177,6 @@ export const mcpSchema: VbenFormSchema[] = [
   },
   {
     component: 'Input',
-    componentProps: buildFieldAttrs('command'),
     fieldName: 'command',
     label: '启动命令',
     rules: 'required',
@@ -126,7 +185,6 @@ export const mcpSchema: VbenFormSchema[] = [
     component: 'Textarea',
     componentProps: {
       autoSize: { minRows: 3, maxRows: 8 },
-      ...buildFieldAttrs('headers'),
     },
     fieldName: 'headers',
     label: '请求头',
@@ -139,7 +197,6 @@ export const mcpSchema: VbenFormSchema[] = [
     component: 'Textarea',
     componentProps: {
       autoSize: { minRows: 4, maxRows: 10 },
-      ...buildFieldAttrs('args'),
       placeholder: '--config\n--verbose',
     },
     fieldName: 'args',
@@ -154,7 +211,6 @@ export const mcpSchema: VbenFormSchema[] = [
     component: 'Textarea',
     componentProps: {
       autoSize: { minRows: 4, maxRows: 10 },
-      ...buildFieldAttrs('env'),
       placeholder: 'OPENAI_API_KEY=sk-xxx\nOPENAI_BASE_URL=https://example.com',
     },
     fieldName: 'env',
@@ -169,9 +225,7 @@ export const mcpSchema: VbenFormSchema[] = [
     component: 'InputNumber',
     componentProps: {
       class: 'w-full',
-      id: 'ai-mcp-timeout',
       min: 0,
-      name: 'timeout',
       step: 0.5,
     },
     defaultValue: 5,
@@ -182,9 +236,7 @@ export const mcpSchema: VbenFormSchema[] = [
     component: 'InputNumber',
     componentProps: {
       class: 'w-full',
-      id: 'ai-mcp-read-timeout',
       min: 0,
-      name: 'read_timeout',
       step: 1,
     },
     defaultValue: 300,
@@ -193,7 +245,6 @@ export const mcpSchema: VbenFormSchema[] = [
   },
   {
     component: 'Textarea',
-    componentProps: buildFieldAttrs('description'),
     fieldName: 'description',
     label: '描述',
   },
@@ -259,4 +310,159 @@ export function parseEnvInput(value: null | string | undefined, label: string) {
   }
 
   return result;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function parseMcpImportJson(value: string): AIMcpParams {
+  const text = value.trim();
+  if (!text) {
+    throw new Error('请输入 JSON 内容');
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('JSON 格式不正确');
+  }
+
+  if (!isRecord(parsed)) {
+    throw new Error('请输入标准 MCP 配置 JSON 对象');
+  }
+
+  if (!isRecord(parsed.mcpServers)) {
+    throw new Error('请粘贴包含 mcpServers 的标准 MCP 配置 JSON');
+  }
+
+  const servers = Object.entries(parsed.mcpServers);
+  if (servers.length === 0) {
+    throw new Error('mcpServers 不能为空对象');
+  }
+
+  if (servers.length !== 1) {
+    throw new Error('当前仅支持导入单个 MCP，请确保 mcpServers 中只包含一项配置');
+  }
+
+  const firstServer = servers[0];
+  if (!firstServer) {
+    throw new Error('mcpServers 不能为空对象');
+  }
+
+  const [serverName, item] = firstServer;
+  if (!isRecord(item)) {
+    throw new Error('服务器配置必须是 JSON 对象');
+  }
+
+  const name = serverName.trim();
+  if (!name) {
+    throw new Error('服务器名称不能为空');
+  }
+
+  const command = typeof item.command === 'string' && item.command.trim()
+    ? item.command.trim()
+    : undefined;
+  const url = typeof item.url === 'string' && item.url.trim()
+    ? item.url.trim()
+    : undefined;
+
+  let type: number | undefined;
+  if (command) {
+    type = 0;
+  } else if (url) {
+    const transportValue = item.transportType ?? item.type ?? item.transport;
+    if (typeof transportValue === 'string') {
+      const normalizedTransport = transportValue.trim().toLowerCase().replaceAll(/\s+/gu, '_');
+      if (normalizedTransport in MCP_TYPE_NAME_MAP) {
+        type = MCP_TYPE_NAME_MAP[normalizedTransport as keyof typeof MCP_TYPE_NAME_MAP];
+      }
+    }
+
+    if (type !== 1 && type !== 2) {
+      type = /\/sse(?:[/?#]|$)/u.test(url) ? 1 : 2;
+    }
+  }
+
+  if (type === undefined) {
+    throw new Error(`MCP ${name} 必须至少包含 command 或 url`);
+  }
+
+  let args: string[] | undefined;
+  if (item.args !== null && item.args !== undefined && item.args !== '') {
+    if (!Array.isArray(item.args) || item.args.some((arg) => typeof arg !== 'string')) {
+      throw new Error(`MCP ${name} 的 args 必须是字符串数组`);
+    }
+
+    args = item.args.map((arg) => arg.trim()).filter(Boolean);
+    if (args.length === 0) {
+      args = undefined;
+    }
+  }
+
+  let env: Record<string, string> | undefined;
+  if (item.env !== null && item.env !== undefined && item.env !== '') {
+    if (!isRecord(item.env)) {
+      throw new Error(`MCP ${name} 的 env 必须是 JSON 对象`);
+    }
+
+    env = Object.fromEntries(
+      Object.entries(item.env).map(([key, itemValue]) => [key, String(itemValue ?? '')]),
+    );
+  }
+
+  let headers: string | undefined;
+  if (item.headers !== null && item.headers !== undefined && item.headers !== '') {
+    if (typeof item.headers === 'string') {
+      headers = item.headers.trim() || undefined;
+    } else if (isRecord(item.headers)) {
+      headers = JSON.stringify(
+        Object.fromEntries(
+          Object.entries(item.headers).map(([key, itemValue]) => [key, String(itemValue ?? '')]),
+        ),
+        null,
+        2,
+      );
+    } else {
+      throw new Error(`MCP ${name} 的 headers 必须是字符串或 JSON 对象`);
+    }
+  }
+
+  const description = typeof item.description === 'string' && item.description.trim()
+    ? item.description.trim()
+    : undefined;
+
+  const timeout = item.timeout;
+  if (
+    timeout !== null &&
+    timeout !== undefined &&
+    timeout !== '' &&
+    (typeof timeout !== 'number' || Number.isNaN(timeout) || timeout < 0)
+  ) {
+    throw new Error(`MCP ${name} 的 timeout 必须是大于等于 0 的数字`);
+  }
+
+  const readTimeout = item.read_timeout;
+  if (
+    readTimeout !== null &&
+    readTimeout !== undefined &&
+    readTimeout !== '' &&
+    (typeof readTimeout !== 'number' || Number.isNaN(readTimeout) || readTimeout < 0)
+  ) {
+    throw new Error(`MCP ${name} 的 read_timeout 必须是大于等于 0 的数字`);
+  }
+
+  return {
+    args,
+    command: command ?? '',
+    description,
+    env,
+    headers,
+    name,
+    read_timeout: typeof readTimeout === 'number' ? readTimeout : undefined,
+    timeout: typeof timeout === 'number' ? timeout : undefined,
+    type,
+    url,
+  };
 }

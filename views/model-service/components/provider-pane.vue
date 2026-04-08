@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import type { AIProviderParams, AIProviderResult } from '#/plugins/ai/api';
+import type {
+  AIProviderParams,
+  AIProviderResult,
+  AIProviderUpdateParams,
+} from '#/plugins/ai/api';
 
 import { computed, onMounted, ref } from 'vue';
 
@@ -11,25 +15,21 @@ import {
 } from '@vben/icons';
 import { $t } from '@vben/locales';
 
-import {
-  Empty as AEmpty,
-  Spin as ASpin,
-  Tag as ATag,
-  message,
-} from 'antdv-next';
+import { useInfiniteScroll } from '@vueuse/core';
+import { message } from 'antdv-next';
 
 import { useVbenForm } from '#/adapter/form';
 import {
   createAIProviderApi,
   deleteAIProviderApi,
-  getAllAIProviderApi,
+  getAIProviderListApi,
   updateAIProviderApi,
 } from '#/plugins/ai/api';
 
 import {
+  createProviderSchema,
   getProviderTypeLabel,
   pickActiveProviderId,
-  providerSchema,
 } from '../data';
 
 const props = defineProps<{
@@ -43,7 +43,13 @@ const emit = defineEmits<{
 
 const providers = ref<AIProviderResult[]>([]);
 const loading = ref(false);
+const loadingMore = ref(false);
+const hasMore = ref(false);
+const providerCursor = ref<string>();
 const formData = ref<AIProviderResult>();
+const scrollContainerRef = ref<HTMLElement>();
+
+const PROVIDER_PAGE_SIZE = 20;
 
 const modalTitle = computed(() => {
   return formData.value?.id
@@ -71,10 +77,40 @@ function syncProviders(
 async function refreshProviders(preferredId?: number) {
   loading.value = true;
   try {
-    const data = await getAllAIProviderApi();
-    syncProviders(data, preferredId);
+    const data = await getAIProviderListApi({
+      cursor: undefined,
+      size: PROVIDER_PAGE_SIZE,
+    });
+    hasMore.value = data.has_more;
+    providerCursor.value = data.next_cursor || undefined;
+    syncProviders(data.items, preferredId);
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadMoreProviders() {
+  if (!hasMore.value || loading.value || loadingMore.value) {
+    return;
+  }
+
+  loadingMore.value = true;
+  try {
+    const data = await getAIProviderListApi({
+      cursor: providerCursor.value,
+      size: PROVIDER_PAGE_SIZE,
+    });
+    const existingIds = new Set(providers.value.map((item) => item.id));
+    const nextProviders = [
+      ...providers.value,
+      ...data.items.filter((item) => !existingIds.has(item.id)),
+    ];
+
+    hasMore.value = data.has_more;
+    providerCursor.value = data.next_cursor || undefined;
+    syncProviders(nextProviders, props.activeProviderId);
+  } finally {
+    loadingMore.value = false;
   }
 }
 
@@ -95,7 +131,7 @@ async function handleDelete(provider: AIProviderResult) {
 const [Form, formApi] = useVbenForm({
   layout: 'vertical',
   showDefaultActions: false,
-  schema: providerSchema,
+  schema: createProviderSchema(),
 });
 
 const [Modal, modalApi] = useVbenModal({
@@ -107,16 +143,17 @@ const [Modal, modalApi] = useVbenModal({
     }
 
     modalApi.lock();
-    const values = await formApi.getValues<AIProviderParams>();
     const editingId = formData.value?.id;
 
     try {
       if (editingId) {
+        const values = await formApi.getValues<AIProviderUpdateParams>();
         await updateAIProviderApi(editingId, values);
         message.success($t('ui.actionMessage.operationSuccess'));
         await modalApi.close();
         await refreshProviders(editingId);
       } else {
+        const values = await formApi.getValues<AIProviderParams>();
         await createAIProviderApi(values);
         message.success($t('ui.actionMessage.operationSuccess'));
         await modalApi.close();
@@ -136,9 +173,11 @@ const [Modal, modalApi] = useVbenModal({
 
     if (data) {
       formData.value = data;
+      formApi.updateSchema(createProviderSchema());
       formApi.setValues(data);
     } else {
       formData.value = undefined;
+      formApi.updateSchema(createProviderSchema());
     }
   },
 });
@@ -146,6 +185,17 @@ const [Modal, modalApi] = useVbenModal({
 onMounted(async () => {
   await refreshProviders();
 });
+
+useInfiniteScroll(
+  scrollContainerRef,
+  async () => {
+    await loadMoreProviders();
+  },
+  {
+    canLoadMore: () => hasMore.value && !loading.value && !loadingMore.value,
+    distance: 64,
+  },
+);
 </script>
 
 <template>
@@ -172,17 +222,21 @@ onMounted(async () => {
         v-if="loading && providers.length === 0"
         class="flex flex-1 items-center justify-center"
       >
-        <ASpin />
+        <a-spin />
       </div>
 
       <div
         v-else-if="providers.length === 0"
         class="flex flex-1 items-center justify-center"
       >
-        <AEmpty description="暂无供应商" />
+        <a-empty description="暂无供应商" />
       </div>
 
-      <div v-else class="min-h-0 flex-1 space-y-3 overflow-y-auto">
+      <div
+        v-else
+        ref="scrollContainerRef"
+        class="min-h-0 flex-1 space-y-3 overflow-y-auto"
+      >
         <button
           v-for="item in providers"
           :key="item.id"
@@ -229,12 +283,15 @@ onMounted(async () => {
           </div>
 
           <div class="mt-3 flex items-center gap-2">
-            <ATag>{{ getProviderTypeLabel(item.type) }}</ATag>
-            <ATag :color="item.status === 1 ? 'success' : 'default'">
+            <a-tag>{{ getProviderTypeLabel(item.type) }}</a-tag>
+            <a-tag :color="item.status === 1 ? 'success' : 'default'">
               {{ item.status === 1 ? '启用' : '停用' }}
-            </ATag>
+            </a-tag>
           </div>
         </button>
+        <div v-if="loadingMore" class="flex justify-center py-3">
+          <a-spin />
+        </div>
       </div>
     </div>
 

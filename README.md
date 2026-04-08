@@ -19,9 +19,9 @@
 
 ```yaml
 catalog:
-  "@antdv-next/x": ^0.0.4
+  "@antdv-next/x": ^0.1.0
   "@antdv-next/x-markdown": ^0.0.2
-  "@antdv-next/x-sdk": ^0.0.1
+  "@antdv-next/x-sdk": ^0.0.2
 ```
 
 应用包 `apps/web-antdv-next/package.json` 中与 AI 插件直接相关的依赖为：

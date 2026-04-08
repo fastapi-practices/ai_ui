@@ -23,16 +23,28 @@ export function useChatStream() {
       }
 
       const currentMessage = messageInfo?.message ?? createProviderSeedMessage();
+      const fallbackText =
+        error.name === 'AbortError' ? '已停止生成' : error.message || '生成失败';
+      const hasContent = currentMessage.blocks.some((block) => {
+        if (block.type === 'file') {
+          return Boolean(block.url || block.name);
+        }
+        return Boolean(block.text?.trim());
+      });
+
       return {
         ...currentMessage,
-        content:
-          currentMessage.content ||
-          (error.name === 'AbortError'
-            ? '已停止生成'
-            : error.message || '生成失败'),
-        error_message: error.name === 'AbortError' ? null : error.message,
-        is_error: error.name !== 'AbortError',
-        timestamp: currentMessage.timestamp || new Date().toISOString(),
+        blocks: hasContent
+          ? currentMessage.blocks
+          : [
+              {
+                text: fallbackText,
+                type: 'text',
+              },
+            ],
+        created_time: currentMessage.created_time || new Date().toISOString(),
+        message_type: error.name === 'AbortError' ? 'normal' : 'error',
+        role: currentMessage.role || 'assistant',
       };
     },
     requestPlaceholder: () => createProviderSeedMessage(),

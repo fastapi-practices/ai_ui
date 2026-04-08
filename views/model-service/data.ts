@@ -16,6 +16,7 @@ export const PROVIDER_TYPE_OPTIONS = [
   { label: 'Google', value: 2 },
   { label: 'xAI', value: 3 },
   { label: 'OpenRouter', value: 4 },
+  { label: 'Type 5', value: 5 },
 ];
 
 export const PROVIDER_TYPE_TAG_OPTIONS = [
@@ -24,9 +25,8 @@ export const PROVIDER_TYPE_TAG_OPTIONS = [
   { color: 'success', label: 'Google', value: 2 },
   { color: 'warning', label: 'xAI', value: 3 },
   { color: 'geekblue', label: 'OpenRouter', value: 4 },
+  { color: 'default', label: 'Type 5', value: 5 },
 ];
-
-export const SYNCABLE_PROVIDER_TYPES = new Set([0, 3, 4]);
 
 export function buildProviderNameMap(providers: AIProviderResult[]) {
   return new Map(providers.map((item) => [item.id, item.name]));
@@ -113,54 +113,58 @@ export function useModelColumns(
   ];
 }
 
-export const providerSchema: VbenFormSchema[] = [
-  {
-    component: 'Input',
-    fieldName: 'name',
-    label: '供应商名称',
-    rules: 'required',
-  },
-  {
-    component: 'Select',
-    componentProps: {
-      class: 'w-full',
-      options: PROVIDER_TYPE_OPTIONS,
+export function createProviderSchema(): VbenFormSchema[] {
+  return [
+    {
+      component: 'Input',
+      fieldName: 'name',
+      label: '供应商名称',
+      rules: 'required',
     },
-    defaultValue: 0,
-    fieldName: 'type',
-    label: '供应商类型',
-    rules: 'required',
-  },
-  {
-    component: 'Input',
-    fieldName: 'api_host',
-    label: 'API Host',
-    rules: 'required',
-  },
-  {
-    component: 'InputPassword',
-    fieldName: 'api_key',
-    label: 'API Key',
-    rules: 'required',
-  },
-  {
-    component: 'RadioGroup',
-    componentProps: {
-      buttonStyle: 'solid',
-      options: getDictOptions(DictEnum.SYS_STATUS),
-      optionType: 'button',
+    {
+      component: 'Select',
+      componentProps: {
+        class: 'w-full',
+        options: PROVIDER_TYPE_OPTIONS,
+      },
+      defaultValue: 0,
+      fieldName: 'type',
+      label: '供应商类型',
+      rules: 'required',
     },
-    defaultValue: 1,
-    fieldName: 'status',
-    label: '状态',
-    rules: 'required',
-  },
-  {
-    component: 'Textarea',
-    fieldName: 'remark',
-    label: '备注',
-  },
-];
+    {
+      component: 'Input',
+      fieldName: 'api_host',
+      label: 'API Host',
+      rules: 'required',
+    },
+    {
+      component: 'InputPassword',
+      fieldName: 'api_key',
+      label: 'API Key',
+      rules: 'required',
+    },
+    {
+      component: 'RadioGroup',
+      componentProps: {
+        buttonStyle: 'solid',
+        options: getDictOptions(DictEnum.SYS_STATUS),
+        optionType: 'button',
+      },
+      defaultValue: 1,
+      fieldName: 'status',
+      label: '状态',
+      rules: 'required',
+    },
+    {
+      component: 'Textarea',
+      fieldName: 'remark',
+      label: '备注',
+    },
+  ];
+}
+
+export const providerSchema: VbenFormSchema[] = createProviderSchema();
 
 export const queryProviderSchema: VbenFormSchema[] = [
   {

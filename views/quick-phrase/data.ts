@@ -4,18 +4,9 @@ import type { AIQuickPhraseResult } from '#/plugins/ai/api';
 
 import { $t } from '@vben/locales';
 
-function buildFieldAttrs(fieldName: string) {
-  return {
-    autocomplete: 'off',
-    id: `ai-quick-phrase-${fieldName}`,
-    name: fieldName,
-  };
-}
-
 export const queryQuickPhraseSchema: VbenFormSchema[] = [
   {
     component: 'Input',
-    componentProps: buildFieldAttrs('content-query'),
     fieldName: 'content',
     label: '短语内容',
   },
@@ -64,7 +55,6 @@ export function useQuickPhraseColumns(
 export const quickPhraseSchema: VbenFormSchema[] = [
   {
     component: 'Input',
-    componentProps: buildFieldAttrs('title'),
     fieldName: 'title',
     label: '短语标题',
     rules: 'required',
@@ -73,7 +63,6 @@ export const quickPhraseSchema: VbenFormSchema[] = [
     component: 'Textarea',
     componentProps: {
       autoSize: { minRows: 4, maxRows: 8 },
-      ...buildFieldAttrs('content'),
     },
     fieldName: 'content',
     label: '短语内容',
@@ -83,9 +72,7 @@ export const quickPhraseSchema: VbenFormSchema[] = [
     component: 'InputNumber',
     componentProps: {
       class: 'w-full',
-      id: 'ai-quick-phrase-sort',
       min: 0,
-      name: 'sort',
       precision: 0,
       step: 1,
     },

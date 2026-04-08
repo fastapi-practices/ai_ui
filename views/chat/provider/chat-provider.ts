@@ -10,7 +10,7 @@ import {
   createAGUIStreamAccumulator,
   parseAGUIStreamEventFromChunk,
   toAIChatMessageFromAGUIEvent,
-} from '#/plugins/ai/api/chat-compat';
+} from '#/plugins/ai/api';
 
 import {
   createProviderSeedMessage,

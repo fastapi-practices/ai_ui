@@ -18,9 +18,9 @@ import {
 
 export interface AIChatProviderRequest {
   body: AIChatCompletionRequest | AIChatRegenerateRequest;
-  conversationId?: string;
+  conversation_id?: string;
   localMessages?: AIChatProviderMessage[];
-  messageId?: number;
+  message_id?: number;
   mode: AIChatTransportMode;
 }
 
