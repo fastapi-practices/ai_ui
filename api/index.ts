@@ -52,25 +52,25 @@ export type AGUIInputContentSource =
   | AGUIInputContentUrlSource;
 
 export interface AGUIImageInputContent {
-  metadata?: Recordable<unknown> | null;
+  metadata?: null | Recordable<unknown>;
   source: AGUIInputContentSource;
   type: 'image';
 }
 
 export interface AGUIAudioInputContent {
-  metadata?: Recordable<unknown> | null;
+  metadata?: null | Recordable<unknown>;
   source: AGUIInputContentSource;
   type: 'audio';
 }
 
 export interface AGUIVideoInputContent {
-  metadata?: Recordable<unknown> | null;
+  metadata?: null | Recordable<unknown>;
   source: AGUIInputContentSource;
   type: 'video';
 }
 
 export interface AGUIDocumentInputContent {
-  metadata?: Recordable<unknown> | null;
+  metadata?: null | Recordable<unknown>;
   source: AGUIInputContentSource;
   type: 'document';
 }
@@ -115,7 +115,7 @@ export interface AGUIUserMessage {
   encrypted_value?: null | string;
   id: string;
   message_index?: null | number;
-  message_type?: null | AIMessageType;
+  message_type?: AIMessageType | null;
   model_id?: null | string;
   name?: null | string;
   persisted_message_id?: null | number;
@@ -172,7 +172,7 @@ export interface AGUIMessageMetadata {
   created_time?: null | string;
   encrypted_value?: null | string;
   message_index?: null | number;
-  message_type?: null | AIMessageType;
+  message_type?: AIMessageType | null;
   model_id?: null | string;
   persisted_message_id?: null | number | string;
   provider_id?: null | number;
@@ -214,7 +214,7 @@ export interface RawAIConversationListItem {
 
 export type AIChatAttachmentSourceType = 'base64' | 'url';
 export type AIChatAttachmentType = 'audio' | 'document' | 'image' | 'video';
-export type AIMessageBlockType = 'file' | 'reasoning' | 'text';
+export type AIMessageBlockType = 'event' | 'file' | 'reasoning' | 'text';
 export type AIMessageType = 'error' | 'normal';
 export type AIMessageRoleType = 'assistant' | 'user';
 
@@ -261,15 +261,15 @@ export type AGUIStreamEventType =
   | 'ACTIVITY_SNAPSHOT'
   | 'MESSAGES_SNAPSHOT'
   | 'REASONING_ENCRYPTED_VALUE'
-  | 'RUN_ERROR'
-  | 'RUN_FINISHED'
-  | 'RUN_STARTED'
   | 'REASONING_END'
   | 'REASONING_MESSAGE_CHUNK'
   | 'REASONING_MESSAGE_CONTENT'
   | 'REASONING_MESSAGE_END'
   | 'REASONING_MESSAGE_START'
   | 'REASONING_START'
+  | 'RUN_ERROR'
+  | 'RUN_FINISHED'
+  | 'RUN_STARTED'
   | 'STATE_DELTA'
   | 'STATE_SNAPSHOT'
   | 'STEP_FINISHED'
@@ -278,15 +278,15 @@ export type AGUIStreamEventType =
   | 'TEXT_MESSAGE_CONTENT'
   | 'TEXT_MESSAGE_END'
   | 'TEXT_MESSAGE_START'
-  | 'TOOL_CALL_ARGS'
-  | 'TOOL_CALL_END'
-  | 'TOOL_CALL_RESULT'
-  | 'TOOL_CALL_START'
   | 'THINKING_END'
   | 'THINKING_START'
   | 'THINKING_TEXT_MESSAGE_CONTENT'
   | 'THINKING_TEXT_MESSAGE_END'
-  | 'THINKING_TEXT_MESSAGE_START';
+  | 'THINKING_TEXT_MESSAGE_START'
+  | 'TOOL_CALL_ARGS'
+  | 'TOOL_CALL_END'
+  | 'TOOL_CALL_RESULT'
+  | 'TOOL_CALL_START';
 
 export interface AGUISSEChunk {
   data?: string;
@@ -484,8 +484,8 @@ export type AGUIStreamEvent =
   | AGUIActivityDeltaEvent
   | AGUIActivitySnapshotEvent
   | AGUIMessagesSnapshotStreamEvent
-  | AGUIReasoningEndEvent
   | AGUIReasoningEncryptedValueEvent
+  | AGUIReasoningEndEvent
   | AGUIReasoningMessageChunkEvent
   | AGUIReasoningMessageContentEvent
   | AGUIReasoningMessageEndEvent
@@ -502,15 +502,15 @@ export type AGUIStreamEvent =
   | AGUITextMessageContentEvent
   | AGUITextMessageEndEvent
   | AGUITextMessageStartEvent
-  | AGUIToolCallArgsEvent
-  | AGUIToolCallEndEvent
-  | AGUIToolCallResultEvent
-  | AGUIToolCallStartEvent
   | AGUIThinkingEndEvent
   | AGUIThinkingStartEvent
   | AGUIThinkingTextMessageContentEvent
   | AGUIThinkingTextMessageEndEvent
   | AGUIThinkingTextMessageStartEvent
+  | AGUIToolCallArgsEvent
+  | AGUIToolCallEndEvent
+  | AGUIToolCallResultEvent
+  | AGUIToolCallStartEvent
   | AGUIUnknownStreamEvent;
 
 export interface AIProviderQueryParams {
@@ -530,7 +530,7 @@ export interface AIProviderParams {
   remark?: null | string;
 }
 
-export interface AIProviderUpdateParams extends AIProviderParams {}
+export type AIProviderUpdateParams = AIProviderParams
 
 export interface AIProviderResult extends AIProviderParams {
   id: number;
@@ -662,15 +662,35 @@ export interface AIChatReasoningMessageBlock {
 }
 
 export interface AIChatFileMessageBlock {
-  file_type?: null | AIChatAttachmentType;
+  file_type?: AIChatAttachmentType | null;
   mime_type?: null | string;
   name?: null | string;
-  source_type?: null | AIChatAttachmentSourceType;
+  source_type?: AIChatAttachmentSourceType | null;
   type: 'file';
   url?: null | string;
 }
 
+export type AIChatEventBlockStatus =
+  | 'error'
+  | 'info'
+  | 'running'
+  | 'success'
+  | 'warning';
+
+export interface AIChatEventMessageBlock {
+  data?: unknown;
+  event_key: string;
+  event_type: AGUIStreamEventType | (string & {});
+  event_types?: string[];
+  status?: AIChatEventBlockStatus;
+  summary?: string;
+  text?: string;
+  title: string;
+  type: 'event';
+}
+
 export type AIChatMessageBlock =
+  | AIChatEventMessageBlock
   | AIChatFileMessageBlock
   | AIChatReasoningMessageBlock
   | AIChatTextMessageBlock;
@@ -946,13 +966,13 @@ function normalizeAGUIFileBlock(
 ): AIChatFileMessageBlock {
   const resolvedMimeType = mimeType ?? source?.mime_type ?? null;
   const sourceType =
-    source?.type === 'data' ? 'base64' : source?.type === 'url' ? 'url' : null;
+    source?.type === 'data' ? 'base64' : (source?.type === 'url' ? 'url' : null);
   const url =
     source?.type === 'url'
       ? source.value
-      : source?.type === 'data'
+      : (source?.type === 'data'
         ? `data:${resolvedMimeType ?? 'application/octet-stream'};base64,${source.value}`
-        : null;
+        : null);
 
   return {
     file_type: type,
@@ -1001,17 +1021,15 @@ function normalizeAGUIUserContentBlocks(
         break;
       }
       case 'binary': {
-        const url = item.url
-          ? item.url
-          : item.data
+        const url = item.url ?? (item.data
             ? `data:${item.mime_type ?? 'application/octet-stream'};base64,${item.data}`
-            : null;
+            : null);
 
         blocks.push({
           file_type: null,
           mime_type: item.mime_type ?? null,
           name: item.filename ?? null,
-          source_type: item.data ? 'base64' : item.url ? 'url' : null,
+          source_type: item.data ? 'base64' : (item.url ? 'url' : null),
           type: 'file',
           url,
         });
@@ -1081,9 +1099,9 @@ function normalizeAGUIToolResultBlocks(content: string): AIChatMessageBlock[] {
       const url =
         typeof value.url === 'string'
           ? value.url
-          : typeof value.value === 'string'
+          : (typeof value.value === 'string'
             ? value.value
-            : null;
+            : null);
 
       const mimeType =
         typeof value.mime_type === 'string'
@@ -1113,9 +1131,9 @@ function normalizeAGUIToolResultBlocks(content: string): AIChatMessageBlock[] {
         name:
           typeof value.name === 'string'
             ? value.name
-            : typeof value.filename === 'string'
+            : (typeof value.filename === 'string'
               ? value.filename
-              : null,
+              : null),
         source_type: url ? 'url' : null,
         type: 'file',
         url,
@@ -1159,9 +1177,9 @@ function normalizeAGUIActivityMessageBlocks(
       const url =
         typeof file.url === 'string'
           ? file.url
-          : typeof file.data === 'string' && typeof file.mime_type === 'string'
+          : (typeof file.data === 'string' && typeof file.mime_type === 'string'
             ? `data:${file.mime_type};base64,${file.data}`
-            : null;
+            : null);
 
       return [
         {
@@ -1171,9 +1189,9 @@ function normalizeAGUIActivityMessageBlocks(
           source_type:
             typeof file.data === 'string'
               ? 'base64'
-              : typeof file.url === 'string'
+              : (typeof file.url === 'string'
                 ? 'url'
-                : null,
+                : null),
           type: 'file',
           url,
         },
@@ -1230,11 +1248,19 @@ function normalizeAGUIConversationMessage(
   let messageType: AIMessageType = resolveAGUIConversationMessageType(message);
 
   switch (message.role) {
+    case 'activity': {
+      blocks = normalizeAGUIActivityMessageBlocks(message.content);
+      break;
+    }
     case 'assistant': {
       if (typeof message.content === 'string' && message.content.trim()) {
         blocks = [{ text: message.content, type: 'text' }];
       }
       break;
+    }
+    case 'developer':
+    case 'system': {
+      return null;
     }
     case 'reasoning': {
       role = 'assistant';
@@ -1258,14 +1284,6 @@ function normalizeAGUIConversationMessage(
       role = 'user';
       blocks = normalizeAGUIUserContentBlocks(message.content);
       break;
-    }
-    case 'activity': {
-      blocks = normalizeAGUIActivityMessageBlocks(message.content);
-      break;
-    }
-    case 'developer':
-    case 'system': {
-      return null;
     }
   }
 
@@ -1323,10 +1341,21 @@ type AGUIThinkingState = {
   messageId?: string;
 };
 
+type AGUIToolCallState = {
+  conversationId?: null | string;
+  createdTime: string;
+  parentMessageId?: string;
+  toolCallId: string;
+  toolCallName?: string;
+};
+
 export type AGUIStreamAccumulator = {
+  currentRunId?: null | string;
   currentThreadId?: null | string;
   messages: Map<string, AGUIStreamMessageState>;
+  stateSnapshot?: unknown;
   thinking?: AGUIThinkingState;
+  toolCalls: Map<string, AGUIToolCallState>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1376,6 +1405,76 @@ function getDeltaFromEvent(event: AGUIStreamEvent) {
   return 'delta' in event && typeof event.delta === 'string' ? event.delta : '';
 }
 
+function getEventText(value: unknown) {
+  return typeof value === 'string' ? value : '';
+}
+
+function uniqueEventTypes(...values: Array<Array<string | undefined> | string | undefined>) {
+  const result: string[] = [];
+
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item && !result.includes(item)) {
+          result.push(item);
+        }
+      }
+      continue;
+    }
+
+    if (value && !result.includes(value)) {
+      result.push(value);
+    }
+  }
+
+  return result;
+}
+
+function normalizeAGUIVisualEventType(
+  type: AGUIStreamEventType | (string & {}),
+): AGUIStreamEventType | (string & {}) {
+  switch (type) {
+    case 'THINKING_END': {
+      return 'REASONING_END';
+    }
+    case 'THINKING_START': {
+      return 'REASONING_START';
+    }
+    case 'THINKING_TEXT_MESSAGE_CONTENT': {
+      return 'REASONING_MESSAGE_CONTENT';
+    }
+    case 'THINKING_TEXT_MESSAGE_END': {
+      return 'REASONING_MESSAGE_END';
+    }
+    case 'THINKING_TEXT_MESSAGE_START': {
+      return 'REASONING_MESSAGE_START';
+    }
+    default: {
+      return type;
+    }
+  }
+}
+
+function getAGUIVisualEventTypes(
+  type: AGUIStreamEventType | (string & {}),
+  extras?: string[],
+) {
+  const normalizedType = normalizeAGUIVisualEventType(type);
+  return uniqueEventTypes(normalizedType, type, extras);
+}
+
+function createEventBlock(
+  params: Omit<AIChatEventMessageBlock, 'event_types' | 'type'>,
+): AIChatEventMessageBlock {
+  const normalizedType = normalizeAGUIVisualEventType(params.event_type);
+  return {
+    ...params,
+    event_type: normalizedType,
+    event_types: getAGUIVisualEventTypes(params.event_type),
+    type: 'event',
+  };
+}
+
 function createOrGetMessageState(
   messageId: string,
   event: AGUIStreamEvent,
@@ -1419,6 +1518,56 @@ function createOrGetThinkingState(
   return state;
 }
 
+function createOrGetToolCallState(
+  event: AGUIStreamEvent,
+  accumulator: AGUIStreamAccumulator,
+  toolCallId?: string,
+) {
+  const nextToolCallId =
+    toolCallId ??
+    ('tool_call_id' in event && typeof event.tool_call_id === 'string'
+      ? event.tool_call_id
+      : undefined);
+
+  if (!nextToolCallId) {
+    return undefined;
+  }
+
+  const previousState = accumulator.toolCalls.get(nextToolCallId);
+  const state =
+    previousState ??
+    ({
+      conversationId: resolveConversationId(event, accumulator) ?? null,
+      createdTime: resolveTimestamp(event.timestamp),
+      parentMessageId:
+        'parent_message_id' in event && typeof event.parent_message_id === 'string'
+          ? event.parent_message_id
+          : undefined,
+      toolCallId: nextToolCallId,
+      toolCallName:
+        'tool_call_name' in event && typeof event.tool_call_name === 'string'
+          ? event.tool_call_name
+          : undefined,
+    } satisfies AGUIToolCallState);
+
+  accumulator.toolCalls.set(nextToolCallId, {
+    ...state,
+    conversationId: state.conversationId ?? resolveConversationId(event, accumulator) ?? null,
+    parentMessageId:
+      state.parentMessageId ??
+      ('parent_message_id' in event && typeof event.parent_message_id === 'string'
+        ? event.parent_message_id
+        : undefined),
+    toolCallName:
+      state.toolCallName ??
+      ('tool_call_name' in event && typeof event.tool_call_name === 'string'
+        ? event.tool_call_name
+        : undefined),
+  });
+
+  return accumulator.toolCalls.get(nextToolCallId);
+}
+
 function clearThinkingState(
   accumulator: AGUIStreamAccumulator,
   messageId?: string,
@@ -1455,15 +1604,21 @@ function createStreamMessage(
 
 export function createAGUIStreamAccumulator(): AGUIStreamAccumulator {
   return {
+    currentRunId: null,
     currentThreadId: null,
     messages: new Map(),
+    stateSnapshot: undefined,
     thinking: undefined,
+    toolCalls: new Map(),
   };
 }
 
 function clearAGUIStreamAccumulator(accumulator: AGUIStreamAccumulator) {
+  accumulator.currentRunId = null;
   accumulator.messages.clear();
+  accumulator.stateSnapshot = undefined;
   accumulator.thinking = undefined;
+  accumulator.toolCalls.clear();
 }
 
 export function parseAGUIStreamEventFromSSE(
@@ -1532,32 +1687,223 @@ export function toAIChatMessageFromAGUIEvent(
   accumulator: AGUIStreamAccumulator,
 ): AIChatMessage | null {
   switch (event.type) {
-    case 'ACTIVITY_DELTA':
-    case 'MESSAGES_SNAPSHOT':
-    case 'REASONING_ENCRYPTED_VALUE':
-    case 'STATE_DELTA':
-    case 'STATE_SNAPSHOT':
-    case 'STEP_FINISHED':
-    case 'STEP_STARTED': {
-      return null;
+    case 'ACTIVITY_DELTA': {
+      const current = event as AGUIActivityDeltaEvent;
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp),
+        [
+          createEventBlock({
+            data: {
+              activity_type: current.activity_type,
+              message_id: current.message_id,
+              patch: current.patch,
+              snapshot: undefined,
+            },
+            event_key: `activity:${current.message_id}`,
+            event_type: current.type,
+            status: 'running',
+            summary: `${current.activity_type} · ${current.patch.length} 条补丁`,
+            title: '活动增量',
+          }),
+        ],
+        resolveConversationId(event, accumulator) ?? null,
+      );
     }
     case 'ACTIVITY_SNAPSHOT': {
+      const current = event as AGUIActivitySnapshotEvent;
+      const conversationId = resolveConversationId(event, accumulator) ?? null;
+      const content = current.content as Recordable<unknown>;
       const blocks = normalizeAGUIActivityMessageBlocks(
-        ('content' in event ? event.content : {}) as Recordable<unknown>,
+        content,
       );
-      if (blocks.length === 0) {
+      const eventBlock = createEventBlock({
+        data: content,
+        event_key: `activity:${current.message_id}`,
+        event_type: current.type,
+        status: 'running',
+        summary: current.activity_type,
+        title: '活动快照',
+      });
+
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp),
+        [eventBlock, ...blocks],
+        conversationId,
+      );
+    }
+    case 'MESSAGES_SNAPSHOT': {
+      const current = event as AGUIMessagesSnapshotStreamEvent;
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp),
+        [
+          createEventBlock({
+            data: current.messages,
+            event_key: 'messages-snapshot',
+            event_type: current.type,
+            status: 'info',
+            summary: `同步 ${current.messages.length} 条消息`,
+            title: '消息快照',
+          }),
+        ],
+        resolveConversationId(event, accumulator) ?? null,
+      );
+    }
+    case 'REASONING_ENCRYPTED_VALUE': {
+      const current = event as AGUIReasoningEncryptedValueEvent;
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp),
+        [
+          createEventBlock({
+            data: {
+              entity_id: current.entity_id,
+              subtype: current.subtype,
+            },
+            event_key: `reasoning-encrypted:${current.subtype}:${current.entity_id}`,
+            event_type: current.type,
+            status: 'warning',
+            summary: `${current.subtype} · ${current.entity_id}`,
+            text: current.encrypted_value,
+            title: '加密推理',
+          }),
+        ],
+        resolveConversationId(event, accumulator) ?? null,
+      );
+    }
+    case 'REASONING_END':
+    case 'THINKING_END': {
+      const messageId = resolveMessageId(event) ?? accumulator.thinking?.messageId;
+      const conversationId = accumulator.thinking?.conversationId ?? resolveConversationId(event, accumulator) ?? null;
+      clearThinkingState(accumulator, resolveMessageId(event));
+
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp),
+        [
+          createEventBlock({
+            data: { message_id: messageId },
+            event_key: `reasoning-phase:${messageId ?? 'current'}`,
+            event_type: event.type,
+            status: 'success',
+            summary: messageId,
+            title: '推理结束',
+          }),
+        ],
+        conversationId,
+      );
+    }
+    case 'REASONING_MESSAGE_CHUNK':
+    case 'REASONING_MESSAGE_CONTENT':
+    case 'THINKING_TEXT_MESSAGE_CONTENT': {
+      const messageId = resolveMessageId(event);
+      if (!messageId && !accumulator.thinking?.messageId) {
+        return null;
+      }
+      const state = createOrGetThinkingState(
+        event,
+        accumulator,
+        messageId ?? accumulator.thinking?.messageId,
+      );
+      const delta = getDeltaFromEvent(event);
+
+      if (!delta) {
         return null;
       }
 
       return createStreamMessage(
         'assistant',
+        resolveTimestamp(event.timestamp, state.createdTime),
+        [
+          {
+            text: delta,
+            type: 'reasoning',
+          },
+          createEventBlock({
+            data: { message_id: messageId ?? state.messageId },
+            event_key: `reasoning-message:${messageId ?? state.messageId ?? 'current'}`,
+            event_type: event.type,
+            status: 'running',
+            summary: messageId ?? state.messageId,
+            text: delta,
+            title: '推理内容',
+          }),
+        ],
+        state.conversationId,
+      );
+    }
+    case 'REASONING_MESSAGE_END':
+    case 'THINKING_TEXT_MESSAGE_END': {
+      const messageId = resolveMessageId(event) ?? accumulator.thinking?.messageId;
+      const conversationId = accumulator.thinking?.conversationId ?? resolveConversationId(event, accumulator) ?? null;
+      clearThinkingState(accumulator, resolveMessageId(event));
+
+      return createStreamMessage(
+        'assistant',
         resolveTimestamp(event.timestamp),
-        blocks,
-        resolveConversationId(event, accumulator) ?? null,
+        [
+          createEventBlock({
+            data: { message_id: messageId },
+            event_key: `reasoning-message:${messageId ?? 'current'}`,
+            event_type: event.type,
+            status: 'success',
+            summary: messageId,
+            title: '推理消息完成',
+          }),
+        ],
+        conversationId,
+      );
+    }
+    case 'REASONING_MESSAGE_START': {
+      const messageId = resolveMessageId(event);
+      if (!messageId) {
+        return null;
+      }
+      const state = createOrGetThinkingState(event, accumulator, messageId);
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp, state.createdTime),
+        [
+          createEventBlock({
+            data: { message_id: messageId },
+            event_key: `reasoning-message:${messageId}`,
+            event_type: event.type,
+            status: 'running',
+            summary: messageId,
+            title: '推理消息开始',
+          }),
+        ],
+        state.conversationId,
+      );
+    }
+    case 'REASONING_START':
+    case 'THINKING_START': {
+      const state = createOrGetThinkingState(
+        event,
+        accumulator,
+        resolveMessageId(event) ?? accumulator.thinking?.messageId,
+      );
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp, state.createdTime),
+        [
+          createEventBlock({
+            data: { message_id: state.messageId },
+            event_key: `reasoning-phase:${state.messageId ?? 'current'}`,
+            event_type: event.type,
+            status: 'running',
+            summary: state.messageId,
+            title: '推理开始',
+          }),
+        ],
+        state.conversationId,
       );
     }
     case 'RUN_ERROR': {
       const conversationId = resolveConversationId(event, accumulator) ?? null;
+      const runKey = accumulator.currentRunId ?? 'current';
       const errorMessage =
         ('message' in event && typeof event.message === 'string'
           ? event.message
@@ -1566,34 +1912,146 @@ export function toAIChatMessageFromAGUIEvent(
       return createStreamMessage(
         'assistant',
         resolveTimestamp(event.timestamp),
-        [{ text: errorMessage, type: 'text' }],
+        [
+          { text: errorMessage, type: 'text' },
+          createEventBlock({
+            data: { message: errorMessage },
+            event_key: `run:${runKey}`,
+            event_type: event.type,
+            status: 'error',
+            summary: '运行过程中出现错误',
+            text: errorMessage,
+            title: '运行错误',
+          }),
+        ],
         conversationId,
         { message_type: 'error' },
       );
     }
     case 'RUN_FINISHED': {
-      accumulator.currentThreadId =
-        resolveThreadId(event) ?? accumulator.currentThreadId;
+      const current = event as AGUIRunFinishedEvent;
+      const conversationId = resolveThreadId(event) ?? accumulator.currentThreadId ?? null;
+      const runId = current.run_id ?? accumulator.currentRunId ?? 'current';
       clearAGUIStreamAccumulator(accumulator);
-      return null;
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp),
+        [
+          createEventBlock({
+            data: {
+              run_id: current.run_id,
+              thread_id: current.thread_id,
+            },
+            event_key: `run:${runId}`,
+            event_type: current.type,
+            status: 'success',
+            summary: current.thread_id,
+            title: '运行完成',
+          }),
+        ],
+        conversationId,
+      );
     }
     case 'RUN_STARTED': {
-      accumulator.currentThreadId = resolveThreadId(event) ?? null;
+      const current = event as AGUIRunStartedEvent;
       clearAGUIStreamAccumulator(accumulator);
-      return null;
+      accumulator.currentRunId = current.run_id;
+      accumulator.currentThreadId = resolveThreadId(event) ?? null;
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp),
+        [
+          createEventBlock({
+            data: {
+              parent_run_id: current.parent_run_id,
+              run_id: current.run_id,
+              thread_id: current.thread_id,
+            },
+            event_key: `run:${current.run_id}`,
+            event_type: current.type,
+            status: 'running',
+            summary: current.thread_id,
+            title: '运行开始',
+          }),
+        ],
+        accumulator.currentThreadId,
+      );
     }
-    case 'TEXT_MESSAGE_CONTENT': {
-      const messageId = resolveMessageId(event);
-      if (!messageId) {
-        return null;
-      }
-      const state = createOrGetMessageState(messageId, event, accumulator);
+    case 'STATE_DELTA': {
+      const current = event as AGUIStateDeltaEvent;
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp),
+        [
+          createEventBlock({
+            data: {
+              delta: current.delta,
+              snapshot: accumulator.stateSnapshot,
+            },
+            event_key: 'state',
+            event_type: current.type,
+            status: 'info',
+            summary: `收到 ${current.delta.length} 条状态补丁`,
+            title: '状态增量',
+          }),
+        ],
+        resolveConversationId(event, accumulator) ?? null,
+      );
+    }
+    case 'STATE_SNAPSHOT': {
+      const current = event as AGUIStateSnapshotEvent;
+      accumulator.stateSnapshot = current.snapshot;
 
       return createStreamMessage(
-        state.role,
-        resolveTimestamp(event.timestamp, state.createdTime),
-        [{ text: getDeltaFromEvent(event), type: 'text' }],
-        state.conversationId,
+        'assistant',
+        resolveTimestamp(event.timestamp),
+        [
+          createEventBlock({
+            data: current.snapshot,
+            event_key: 'state',
+            event_type: current.type,
+            status: 'info',
+            summary: '状态快照已同步',
+            title: '状态快照',
+          }),
+        ],
+        resolveConversationId(event, accumulator) ?? null,
+      );
+    }
+    case 'STEP_FINISHED': {
+      const current = event as AGUIStepFinishedEvent;
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp),
+        [
+          createEventBlock({
+            data: { step_name: current.step_name },
+            event_key: `step:${current.step_name}`,
+            event_type: current.type,
+            status: 'success',
+            summary: current.step_name,
+            title: '步骤完成',
+          }),
+        ],
+        resolveConversationId(event, accumulator) ?? null,
+      );
+    }
+    case 'STEP_STARTED': {
+      const current = event as AGUIStepStartedEvent;
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp),
+        [
+          createEventBlock({
+            data: { step_name: current.step_name },
+            event_key: `step:${current.step_name}`,
+            event_type: current.type,
+            status: 'running',
+            summary: current.step_name,
+            title: '步骤开始',
+          }),
+        ],
+        resolveConversationId(event, accumulator) ?? null,
       );
     }
     case 'TEXT_MESSAGE_CHUNK': {
@@ -1620,7 +2078,43 @@ export function toAIChatMessageFromAGUIEvent(
       return createStreamMessage(
         state.role,
         resolveTimestamp(event.timestamp, state.createdTime),
-        [{ text: delta, type: 'text' }],
+        [
+          { text: delta, type: 'text' },
+          createEventBlock({
+            data: { message_id: messageId, role: state.role },
+            event_key: `text-message:${messageId}`,
+            event_type: event.type,
+            status: 'running',
+            summary: messageId,
+            text: delta,
+            title: '文本流',
+          }),
+        ],
+        state.conversationId,
+      );
+    }
+    case 'TEXT_MESSAGE_CONTENT': {
+      const messageId = resolveMessageId(event);
+      if (!messageId) {
+        return null;
+      }
+      const state = createOrGetMessageState(messageId, event, accumulator);
+
+      return createStreamMessage(
+        state.role,
+        resolveTimestamp(event.timestamp, state.createdTime),
+        [
+          { text: getDeltaFromEvent(event), type: 'text' },
+          createEventBlock({
+            data: { message_id: messageId, role: state.role },
+            event_key: `text-message:${messageId}`,
+            event_type: event.type,
+            status: 'running',
+            summary: messageId,
+            text: getDeltaFromEvent(event),
+            title: '文本内容',
+          }),
+        ],
         state.conversationId,
       );
     }
@@ -1640,7 +2134,17 @@ export function toAIChatMessageFromAGUIEvent(
       return createStreamMessage(
         state.role,
         resolveTimestamp(event.timestamp, state.createdTime),
-        [{ text: finalContent, type: 'text' }],
+        [
+          { text: finalContent, type: 'text' },
+          createEventBlock({
+            data: { message_id: messageId, role: state.role },
+            event_key: `text-message:${messageId}`,
+            event_type: event.type,
+            status: 'success',
+            summary: messageId,
+            title: '文本完成',
+          }),
+        ],
         state.conversationId,
       );
     }
@@ -1659,89 +2163,154 @@ export function toAIChatMessageFromAGUIEvent(
         role: mapAGUIRole(role),
       };
       accumulator.messages.set(messageId, state);
-      return null;
-    }
-    case 'TOOL_CALL_ARGS':
-    case 'TOOL_CALL_END':
-    case 'TOOL_CALL_START': {
-      return null;
-    }
-    case 'TOOL_CALL_RESULT': {
-      const blocks = normalizeAGUIToolResultBlocks(
-        'content' in event && typeof event.content === 'string'
-          ? event.content
-          : '',
-      );
-      if (blocks.length === 0) {
-        return null;
-      }
-
       return createStreamMessage(
-        'assistant',
-        resolveTimestamp(event.timestamp),
-        blocks,
-        resolveConversationId(event, accumulator) ?? null,
+        state.role,
+        resolveTimestamp(event.timestamp, state.createdTime),
+        [
+          createEventBlock({
+            data: { message_id: messageId, role: state.role },
+            event_key: `text-message:${messageId}`,
+            event_type: event.type,
+            status: 'running',
+            summary: messageId,
+            title: '文本开始',
+          }),
+        ],
+        state.conversationId,
       );
-    }
-    case 'REASONING_END':
-    case 'THINKING_END': {
-      clearThinkingState(accumulator, resolveMessageId(event));
-      return null;
-    }
-    case 'REASONING_START':
-    case 'THINKING_START': {
-      createOrGetThinkingState(
-        event,
-        accumulator,
-        resolveMessageId(event) ?? accumulator.thinking?.messageId,
-      );
-      return null;
-    }
-    case 'REASONING_MESSAGE_START': {
-      const messageId = resolveMessageId(event);
-      if (!messageId) {
-        return null;
-      }
-      createOrGetThinkingState(event, accumulator, messageId);
-      return null;
     }
     case 'THINKING_TEXT_MESSAGE_START': {
-      createOrGetThinkingState(
-        event,
-        accumulator,
-        resolveMessageId(event) ?? accumulator.thinking?.messageId,
-      );
-      return null;
-    }
-    case 'REASONING_MESSAGE_CHUNK':
-    case 'THINKING_TEXT_MESSAGE_CONTENT':
-    case 'REASONING_MESSAGE_CONTENT': {
-      const messageId = resolveMessageId(event);
-      if (!messageId && !accumulator.thinking?.messageId) {
-        return null;
-      }
       const state = createOrGetThinkingState(
         event,
         accumulator,
-        messageId ?? accumulator.thinking?.messageId,
+        resolveMessageId(event) ?? accumulator.thinking?.messageId,
       );
-      const delta = getDeltaFromEvent(event);
-
-      if (!delta) {
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp, state.createdTime),
+        [
+          createEventBlock({
+            data: { message_id: state.messageId },
+            event_key: `reasoning-message:${state.messageId ?? 'current'}`,
+            event_type: event.type,
+            status: 'running',
+            summary: state.messageId,
+            title: '推理消息开始',
+          }),
+        ],
+        state.conversationId,
+      );
+    }
+    case 'TOOL_CALL_ARGS': {
+      const current = event as AGUIToolCallArgsEvent;
+      const state = createOrGetToolCallState(event, accumulator, current.tool_call_id);
+      if (!state) {
         return null;
       }
 
       return createStreamMessage(
         'assistant',
         resolveTimestamp(event.timestamp, state.createdTime),
-        [{ text: delta, type: 'reasoning' }],
+        [
+          createEventBlock({
+            data: {
+              tool_call_id: current.tool_call_id,
+              tool_call_name: state.toolCallName,
+            },
+            event_key: `tool-call:${current.tool_call_id}`,
+            event_type: current.type,
+            status: 'running',
+            summary: state.toolCallName ?? current.tool_call_id,
+            text: current.delta,
+            title: '工具调用参数',
+          }),
+        ],
         state.conversationId,
       );
     }
-    case 'REASONING_MESSAGE_END':
-    case 'THINKING_TEXT_MESSAGE_END': {
-      clearThinkingState(accumulator, resolveMessageId(event));
-      return null;
+    case 'TOOL_CALL_END': {
+      const current = event as AGUIToolCallEndEvent;
+      const state = createOrGetToolCallState(event, accumulator, current.tool_call_id);
+      if (!state) {
+        return null;
+      }
+
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp, state.createdTime),
+        [
+          createEventBlock({
+            data: {
+              tool_call_id: current.tool_call_id,
+              tool_call_name: state.toolCallName,
+            },
+            event_key: `tool-call:${current.tool_call_id}`,
+            event_type: current.type,
+            status: 'success',
+            summary: state.toolCallName ?? current.tool_call_id,
+            title: '工具调用完成',
+          }),
+        ],
+        state.conversationId,
+      );
+    }
+    case 'TOOL_CALL_RESULT': {
+      const current = event as AGUIToolCallResultEvent;
+      const state = createOrGetToolCallState(event, accumulator, current.tool_call_id);
+      const blocks = normalizeAGUIToolResultBlocks(
+        typeof current.content === 'string'
+          ? current.content
+          : '',
+      );
+
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp),
+        [
+          createEventBlock({
+            data: {
+              message_id: current.message_id,
+              tool_call_id: current.tool_call_id,
+              tool_call_name: state?.toolCallName,
+            },
+            event_key: `tool-call:${current.tool_call_id}`,
+            event_type: current.type,
+            status: 'success',
+            summary: state?.toolCallName ?? current.tool_call_id,
+            text: blocks.length === 0 ? getEventText(current.content) : undefined,
+            title: '工具调用结果',
+          }),
+          ...blocks,
+        ],
+        state?.conversationId ?? resolveConversationId(event, accumulator) ?? null,
+      );
+    }
+    case 'TOOL_CALL_START': {
+      const current = event as AGUIToolCallStartEvent;
+      const state = createOrGetToolCallState(event, accumulator, current.tool_call_id);
+      if (!state) {
+        return null;
+      }
+
+      return createStreamMessage(
+        'assistant',
+        resolveTimestamp(event.timestamp, state.createdTime),
+        [
+          createEventBlock({
+            data: {
+              parent_message_id: current.parent_message_id,
+              tool_call_id: current.tool_call_id,
+              tool_call_name: current.tool_call_name,
+            },
+            event_key: `tool-call:${current.tool_call_id}`,
+            event_type: current.type,
+            status: 'running',
+            summary: current.tool_call_name,
+            title: '工具调用开始',
+          }),
+        ],
+        state.conversationId,
+      );
     }
     default: {
       return null;

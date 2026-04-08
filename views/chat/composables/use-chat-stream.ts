@@ -1,4 +1,5 @@
 import type { AIChatProviderMessage } from '../data';
+import type { AIChatProviderRequest } from '../provider/chat-request';
 
 import { ref } from 'vue';
 
@@ -6,7 +7,6 @@ import { useXChat } from '@antdv-next/x-sdk';
 
 import { createProviderSeedMessage } from '../data';
 import { AIChatProvider } from '../provider/chat-provider';
-import type { AIChatProviderRequest } from '../provider/chat-request';
 
 export function useChatStream() {
   const chatProvider = new AIChatProvider();

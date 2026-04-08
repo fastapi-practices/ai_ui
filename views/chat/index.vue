@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import type { ActionsProps, BubbleProps, ConversationsProps, SenderProps } from "@antdv-next/x";
+import type {
+  ActionsProps,
+  BubbleProps,
+  ConversationsProps,
+  FileCardProps,
+  SenderProps,
+  SourcesProps,
+  ThoughtChainItemType,
+} from "@antdv-next/x";
 import type { MenuItemType } from "antdv-next";
 
 import type { FunctionalComponent, VNodeArrayChildren } from "vue";
@@ -7,6 +15,7 @@ import type { FunctionalComponent, VNodeArrayChildren } from "vue";
 import type { AIChatProviderMessage, ChatMessageItem } from "./data";
 import type { AIChatProviderRequest } from "./provider/chat-request";
 
+import type { VbenFormSchema } from "#/adapter/form";
 import type {
   AIChatConversationDetail,
   AIChatConversationItem,
@@ -19,11 +28,23 @@ import type {
 
 import { computed, h, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
-import { ColPage, confirm, useVbenModal, VbenButton } from "@vben/common-ui";
+import { ColPage, confirm, useVbenModal } from "@vben/common-ui";
 import { IconifyIcon, MaterialSymbolsDelete, MaterialSymbolsEdit, Pin, PinOff } from "@vben/icons";
 import { usePreferences } from "@vben/preferences";
 
-import { Actions, Bubble, CodeHighlighter, Mermaid, Think, Welcome } from "@antdv-next/x";
+import {
+  Actions,
+  Bubble,
+  BubbleDivider,
+  CodeHighlighter,
+  FileCardList,
+  Mermaid,
+  Sources,
+  Think,
+  ThoughtChain,
+  ThoughtChainItem,
+  Welcome,
+} from "@antdv-next/x";
 import { XMarkdown } from "@antdv-next/x-markdown";
 import { useClipboard } from "@vueuse/core";
 import {
@@ -37,6 +58,7 @@ import {
   Popover,
 } from "antdv-next";
 
+import { useVbenForm } from "#/adapter/form";
 import {
   buildChatCompletionRequest,
   clearAIChatConversationContextApi,
@@ -61,6 +83,7 @@ import {
   buildTransientMessageItems,
   createProviderUserMessage,
   getEditableMessageText,
+  getMessageEventBlocks,
   getMessageFileBlocks,
   getMessageTextContent,
   hasRenderableMessageContent,
@@ -92,8 +115,6 @@ const activeConversationId = ref<string>();
 const editingMessage = ref<ChatMessageItem>();
 const editingMessageIntent = ref<"resend" | "save">("save");
 const regeneratingMessageIndex = ref<number>();
-const isRenamingConversation = ref(false);
-const renameTitle = ref("");
 const stopSequencesPlaceholder = '["</thinking>"]';
 const extraHeadersPlaceholder = '{"x-trace-id":"chat-demo"}';
 const extraBodyPlaceholder = '{"metadata":{"scene":"chat"}}';
@@ -156,6 +177,21 @@ const extraBody = ref("");
 const logitBias = ref("");
 const quickPhrasePopoverOpen = ref(false);
 const thinkingPanelStates = ref<Record<string, ThinkingPanelState>>({});
+const renameConversationFormData = ref<AIChatConversationItem>();
+
+const renameConversationSchema: VbenFormSchema[] = [
+  {
+    component: "Input" as const,
+    componentProps: {
+      autofocus: true,
+      maxlength: 100,
+      placeholder: "请输入话题标题",
+    },
+    fieldName: "title",
+    label: "新话题",
+    rules: "required",
+  },
+];
 
 const GENERATION_TYPE_OPTIONS: Array<{
   desc: string;
@@ -406,8 +442,6 @@ function createNewConversation() {
   setTransientMessages([]);
   draftConversationTitle.value = "新话题";
   detailLoading.value = false;
-  isRenamingConversation.value = false;
-  renameTitle.value = "";
   resetComposerState(true);
   autoFollowMessageScroll.value = true;
   scrollToTop();
@@ -581,8 +615,6 @@ async function selectConversation(conversationId: string) {
 
   stopStreaming();
   setTransientMessages([]);
-  isRenamingConversation.value = false;
-  renameTitle.value = "";
   resetComposerState(true);
   activeConversationId.value = conversationId;
   activeConversationDetail.value = undefined;
@@ -710,38 +742,53 @@ async function startRenameConversation(conversation?: AIChatConversationItem) {
     return;
   }
 
-  if (targetConversation.conversation_id !== activeConversationId.value) {
-    await selectConversation(targetConversation.conversation_id);
-  }
-
-  renameTitle.value = targetConversation.title;
-  isRenamingConversation.value = true;
+  renameConversationModalApi.setData(targetConversation).open();
 }
 
-function cancelRenameConversation() {
-  isRenamingConversation.value = false;
-  renameTitle.value = "";
+function resetRenameConversationState() {
+  renameConversationFormData.value = undefined;
+  renameConversationFormApi.resetForm();
 }
 
 async function submitRenameConversation() {
-  const conversationId = activeConversationId.value;
-  const conversation = activeConversation.value;
-  const title = renameTitle.value.trim();
+  const { valid } = await renameConversationFormApi.validate();
+  if (!valid) {
+    return;
+  }
+
+  const conversation = renameConversationFormData.value;
+  const conversationId = conversation?.conversation_id;
+  const { title: currentTitle = "" } = await renameConversationFormApi.getValues<{
+    title?: string;
+  }>();
+  const title = currentTitle.trim();
+  const updatedTime = new Date().toISOString();
 
   if (!conversationId || !conversation || !title) {
     message.error("请输入话题标题");
     return;
   }
 
-  await updateAIChatConversationApi(conversationId, { title });
-  upsertConversation({
-    ...conversation,
-    title,
-  });
-  draftConversationTitle.value = title;
-  isRenamingConversation.value = false;
-  renameTitle.value = "";
-  message.success("话题标题已更新");
+  renameConversationModalApi.lock();
+  try {
+    await updateAIChatConversationApi(conversationId, { title });
+    upsertConversation({
+      ...conversation,
+      title,
+      updated_time: updatedTime,
+    });
+    if (activeConversationDetail.value?.conversation_id === conversationId) {
+      activeConversationDetail.value = {
+        ...activeConversationDetail.value,
+        title,
+        updated_time: updatedTime,
+      };
+    }
+    await renameConversationModalApi.close();
+    message.success("话题标题已更新");
+  } finally {
+    renameConversationModalApi.unlock();
+  }
 }
 
 async function togglePinConversation(conversation?: AIChatConversationItem) {
@@ -761,6 +808,9 @@ async function removeConversation(conversationId: string) {
   stopStreaming();
   await deleteAIChatConversationApi(conversationId);
   removeConversationSummary(conversationId);
+  if (renameConversationFormData.value?.conversation_id === conversationId) {
+    await renameConversationModalApi.close();
+  }
 
   if (activeConversationId.value === conversationId) {
     const nextConversation = conversations.value.find(
@@ -864,12 +914,24 @@ function confirmClearMessages() {
   });
 }
 
+function confirmClearConversationContext() {
+  confirm({
+    content: "确认清除当前话题的上下文吗？现有消息会保留展示，后续回复将从分割线之后继续",
+    icon: "warning",
+  }).then(async () => {
+    await clearConversationContext();
+  });
+}
+
 async function clearConversationContext() {
   if (!activeConversationId.value) {
     return;
   }
 
+  stopStreaming();
+  setTransientMessages([]);
   const result = await clearAIChatConversationContextApi(activeConversationId.value);
+  const updatedTime = new Date().toISOString();
   activeConversationDetail.value = {
     ...(activeConversationDetail.value ?? {
       conversation_id: activeConversationId.value,
@@ -880,10 +942,18 @@ async function clearConversationContext() {
       model_id: selectedModelId.value ?? "",
       provider_id: selectedProviderId.value ?? 0,
       title: draftConversationTitle.value,
+      updated_time: updatedTime,
     }),
     context_cleared_time: result.context_cleared_time ?? null,
     context_start_message_id: result.context_start_message_id ?? null,
+    updated_time: updatedTime,
   };
+  if (activeConversation.value) {
+    upsertConversation({
+      ...activeConversation.value,
+      updated_time: updatedTime,
+    });
+  }
   message.success("对话上下文已清除");
 }
 
@@ -1238,7 +1308,11 @@ const modelOptions = computed(() => {
 });
 
 const activeConversationTitle = computed(() => {
-  return activeConversation.value?.title || draftConversationTitle.value;
+  return (
+    activeConversationDetail.value?.title ||
+    activeConversation.value?.title ||
+    draftConversationTitle.value
+  );
 });
 
 const activeConversationSubtitle = computed(() => {
@@ -1283,7 +1357,7 @@ const contextDividerAfterMessageId = computed(() => {
       (item) => item.message_id === detail.context_start_message_id,
     );
 
-    if (anchorIndex >= 0) {
+    if (anchorIndex !== -1) {
       return activeMessages.value[anchorIndex]?.id;
     }
   }
@@ -1460,96 +1534,63 @@ function isVideoFile(file: ReturnType<typeof getMessageFileBlocks>[number]) {
   return file.file_type === "video" || file.mime_type?.startsWith("video/");
 }
 
-function renderMessageFileBlock(
+function openExternalLink(url: string) {
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+function getFileCardType(
+  file: ReturnType<typeof getMessageFileBlocks>[number],
+): NonNullable<FileCardProps["type"]> {
+  if (isImageFile(file)) {
+    return "image";
+  }
+  if (isAudioFile(file)) {
+    return "audio";
+  }
+  if (isVideoFile(file)) {
+    return "video";
+  }
+  return "file";
+}
+
+function toMessageFileCard(
   message: ChatMessageItem,
   file: ReturnType<typeof getMessageFileBlocks>[number],
   index: number,
-) {
+): FileCardProps {
   const title = file.name || file.url || "附件";
   const meta = getFileTypeLabel(file);
-  const key = `${message.id}-file-${index}`;
+  const type = getFileCardType(file);
 
-  if (file.url && isImageFile(file)) {
-    return h("div", { key, class: "overflow-hidden rounded-xl border border-border bg-muted/15" }, [
-      h(
-        "a",
-        {
-          class: "block bg-black/5",
-          href: file.url,
-          rel: "noreferrer",
-          target: "_blank",
-        },
-        [
-          h("img", {
-            alt: title,
-            class: "max-h-[420px] w-full object-contain",
-            loading: "lazy",
-            src: file.url,
-          }),
-        ],
-      ),
-      h("div", { class: "space-y-1 px-3 py-3" }, [
-        h("div", { class: "text-sm font-medium text-foreground" }, title),
-        meta ? h("div", { class: "text-xs text-muted-foreground" }, meta) : null,
-      ]),
-    ]);
+  return {
+    audioProps: type === "audio" ? { controls: true, preload: "metadata" } : undefined,
+    description: meta || undefined,
+    imageProps: type === "image" ? { preview: true } : undefined,
+    key: `${message.id}-file-${index}`,
+    name: title,
+    onClick: file.url ? () => openExternalLink(file.url!) : undefined,
+    size: "small",
+    src: file.url && type !== "file" ? file.url : undefined,
+    type,
+    videoProps: type === "video" ? { controls: true, preload: "metadata" } : undefined,
+  };
+}
+
+function renderMessageFiles(
+  message: ChatMessageItem,
+  files: ReturnType<typeof getMessageFileBlocks>,
+) {
+  if (files.length === 0) {
+    return null;
   }
 
-  if (file.url && isAudioFile(file)) {
-    return h(
-      "div",
-      {
-        key,
-        class: "space-y-3 rounded-xl border border-border bg-muted/15 px-3 py-3",
-      },
-      [
-        h("div", { class: "text-sm font-medium text-foreground" }, title),
-        h("audio", {
-          class: "w-full",
-          controls: true,
-          preload: "metadata",
-          src: file.url,
-        }),
-        meta ? h("div", { class: "text-xs text-muted-foreground" }, meta) : null,
-      ],
-    );
-  }
-
-  if (file.url && isVideoFile(file)) {
-    return h(
-      "div",
-      {
-        key,
-        class: "space-y-3 rounded-xl border border-border bg-muted/15 px-3 py-3",
-      },
-      [
-        h("video", {
-          class: "max-h-[420px] w-full rounded-lg bg-black/70",
-          controls: true,
-          preload: "metadata",
-          src: file.url,
-        }),
-        h("div", { class: "text-sm font-medium text-foreground" }, title),
-        meta ? h("div", { class: "text-xs text-muted-foreground" }, meta) : null,
-      ],
-    );
-  }
-
-  return h(
-    "a",
-    {
-      key,
-      class:
-        "block max-w-full rounded-xl border border-border bg-muted/30 px-3 py-2 no-underline transition-colors hover:border-primary/30 hover:bg-accent/30",
-      href: file.url || undefined,
-      rel: "noreferrer",
-      target: file.url ? "_blank" : undefined,
-    },
-    [
-      h("div", { class: "text-sm font-medium text-foreground" }, title),
-      meta ? h("div", { class: "mt-1 text-xs text-muted-foreground" }, meta) : null,
-    ],
-  );
+  return h("div", { key: `${message.id}-files`, class: "max-w-full" }, [
+    h(FileCardList, {
+      items: files.map((file, index) => toMessageFileCard(message, file, index)),
+      overflow: "wrap",
+      size: "small",
+    }),
+  ]);
 }
 
 function extractMarkdownSlotText(value: unknown): string {
@@ -1595,6 +1636,671 @@ function MarkdownContent(props: { content?: string; streaming?: boolean }) {
           },
         }
       : {}),
+  });
+}
+
+function formatEventData(value: unknown) {
+  if (value === undefined) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function looksLikeStructuredText(value: string) {
+  const text = value.trim();
+  if (!text) {
+    return false;
+  }
+
+  return (
+    text.startsWith("{") ||
+    text.startsWith("[") ||
+    text.startsWith("eyJ") ||
+    text.includes('":') ||
+    text.includes('","')
+  );
+}
+
+function getThoughtChainStatus(
+  status?: ReturnType<typeof getMessageEventBlocks>[number]["status"],
+): ThoughtChainItemType["status"] | undefined {
+  switch (status) {
+    case "error": {
+      return "error";
+    }
+    case "running": {
+      return "loading";
+    }
+    case "success": {
+      return "success";
+    }
+    default: {
+      return undefined;
+    }
+  }
+}
+
+function isExternalUrl(value: string) {
+  return /^https?:\/\//iu.test(value.trim());
+}
+
+function extractSourceItems(
+  value: unknown,
+  items: NonNullable<SourcesProps["items"]>,
+  seen: Set<string>,
+  depth = 0,
+) {
+  if (depth > 3 || items.length >= 8 || value === null || value === undefined) {
+    return;
+  }
+
+  if (typeof value === "string") {
+    const url = value.trim();
+    if (!isExternalUrl(url) || seen.has(url)) {
+      return;
+    }
+    seen.add(url);
+    items.push({
+      key: url,
+      title: url,
+      url,
+    });
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      extractSourceItems(item, items, seen, depth + 1);
+      if (items.length >= 8) {
+        break;
+      }
+    }
+    return;
+  }
+
+  if (typeof value !== "object") {
+    return;
+  }
+
+  const record = value as Record<string, unknown>;
+  const candidateUrl =
+    (typeof record.url === "string" && record.url) ||
+    (typeof record.source_url === "string" && record.source_url) ||
+    (typeof record.link === "string" && record.link);
+
+  if (candidateUrl && isExternalUrl(candidateUrl) && !seen.has(candidateUrl)) {
+    seen.add(candidateUrl);
+    items.push({
+      description:
+        typeof record.description === "string"
+          ? record.description
+          : (typeof record.snippet === "string" ? record.snippet : undefined),
+      key: candidateUrl,
+      title:
+        (typeof record.title === "string" && record.title) ||
+        (typeof record.name === "string" && record.name) ||
+        candidateUrl,
+      url: candidateUrl,
+    });
+  }
+
+  for (const nested of Object.values(record)) {
+    extractSourceItems(nested, items, seen, depth + 1);
+    if (items.length >= 8) {
+      break;
+    }
+  }
+}
+
+function getEventSourceItems(data: unknown): NonNullable<SourcesProps["items"]> {
+  const items: NonNullable<SourcesProps["items"]> = [];
+  extractSourceItems(data, items, new Set<string>());
+  return items;
+}
+
+function renderEventText(
+  text: string,
+  eventType: ReturnType<typeof getMessageEventBlocks>[number]["event_type"],
+  streaming: boolean,
+) {
+  if (!text.trim()) {
+    return null;
+  }
+
+  if (
+    looksLikeStructuredText(text) ||
+    eventType === "REASONING_ENCRYPTED_VALUE" ||
+    eventType === "TOOL_CALL_ARGS"
+  ) {
+    return renderCodeBlock(text, "json");
+  }
+
+  return h(MarkdownContent, {
+    content: text,
+    streaming,
+  });
+}
+
+function isSearchLikeEvent(
+  block: ReturnType<typeof getMessageEventBlocks>[number],
+  sourceItems: NonNullable<SourcesProps["items"]>,
+) {
+  if (sourceItems.length > 0) {
+    return true;
+  }
+
+  const searchText = [block.title, block.summary, block.event_type].join(" ").toLowerCase();
+  return (
+    searchText.includes("search") ||
+    searchText.includes("source") ||
+    searchText.includes("搜索") ||
+    searchText.includes("来源")
+  );
+}
+
+function getEventDataRecord(block: ReturnType<typeof getMessageEventBlocks>[number]) {
+  return block.data && typeof block.data === "object" ? (block.data as Record<string, unknown>) : undefined;
+}
+
+function getEventDataString(
+  block: ReturnType<typeof getMessageEventBlocks>[number],
+  key: string,
+) {
+  const record = getEventDataRecord(block);
+  return typeof record?.[key] === "string" ? record[key] : undefined;
+}
+
+function formatEventName(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+
+  return value
+    .replaceAll(/[_-]+/gu, " ")
+    .replaceAll(/\s+/gu, " ")
+    .trim();
+}
+
+function getEventDisplayTitle(
+  block: ReturnType<typeof getMessageEventBlocks>[number],
+  sourceItems: NonNullable<SourcesProps["items"]>,
+) {
+  const toolName = formatEventName(getEventDataString(block, "tool_call_name"));
+  const stepName = formatEventName(getEventDataString(block, "step_name"));
+  const activityType = formatEventName(getEventDataString(block, "activity_type"));
+
+  if (sourceItems.length > 0) {
+    return "联网搜索";
+  }
+
+  switch (block.event_type) {
+    case "ACTIVITY_DELTA": {
+      return activityType ? `活动更新 · ${activityType}` : "活动更新";
+    }
+    case "ACTIVITY_SNAPSHOT": {
+      return activityType ? `活动快照 · ${activityType}` : "活动快照";
+    }
+    case "MESSAGES_SNAPSHOT": {
+      return "同步历史消息";
+    }
+    case "REASONING_ENCRYPTED_VALUE": {
+      return "受保护内容";
+    }
+    case "REASONING_END":
+    case "REASONING_MESSAGE_END":
+    case "THINKING_END":
+    case "THINKING_TEXT_MESSAGE_END": {
+      return "思考完成";
+    }
+    case "REASONING_MESSAGE_CHUNK":
+    case "REASONING_MESSAGE_CONTENT":
+    case "THINKING_TEXT_MESSAGE_CONTENT": {
+      return "思考中";
+    }
+    case "REASONING_MESSAGE_START":
+    case "THINKING_TEXT_MESSAGE_START": {
+      return "展开思考";
+    }
+    case "REASONING_START":
+    case "THINKING_START": {
+      return "开始思考";
+    }
+    case "RUN_ERROR": {
+      return "生成失败";
+    }
+    case "RUN_FINISHED": {
+      return "生成完成";
+    }
+    case "RUN_STARTED": {
+      return "开始生成";
+    }
+    case "STATE_DELTA": {
+      return "更新状态";
+    }
+    case "STATE_SNAPSHOT": {
+      return "同步状态";
+    }
+    case "STEP_FINISHED": {
+      return stepName ? `步骤完成 · ${stepName}` : "步骤完成";
+    }
+    case "STEP_STARTED": {
+      return stepName ? `执行步骤 · ${stepName}` : "执行步骤";
+    }
+    case "TEXT_MESSAGE_CHUNK":
+    case "TEXT_MESSAGE_CONTENT": {
+      return "输出回复";
+    }
+    case "TEXT_MESSAGE_END": {
+      return "回复完成";
+    }
+    case "TEXT_MESSAGE_START": {
+      return "开始输出回复";
+    }
+    case "TOOL_CALL_ARGS": {
+      return toolName ? `工具输入 · ${toolName}` : "工具输入";
+    }
+    case "TOOL_CALL_END": {
+      return toolName ? `工具完成 · ${toolName}` : "工具完成";
+    }
+    case "TOOL_CALL_RESULT": {
+      return toolName ? `工具结果 · ${toolName}` : "工具结果";
+    }
+    case "TOOL_CALL_START": {
+      return toolName ? `调用工具 · ${toolName}` : "调用工具";
+    }
+    default: {
+      return block.title || block.event_type;
+    }
+  }
+}
+
+function getEventDisplayDescription(
+  block: ReturnType<typeof getMessageEventBlocks>[number],
+  sourceItems: NonNullable<SourcesProps["items"]>,
+) {
+  const toolName = formatEventName(getEventDataString(block, "tool_call_name"));
+  const stepName = formatEventName(getEventDataString(block, "step_name"));
+  const activityType = formatEventName(getEventDataString(block, "activity_type"));
+
+  if (sourceItems.length > 0) {
+    return sourceItems.length > 1 ? `找到 ${sourceItems.length} 个来源` : "找到 1 个来源";
+  }
+
+  switch (block.event_type) {
+    case "ACTIVITY_DELTA": {
+      return activityType ? `${activityType} 正在更新` : block.summary || "活动更新中";
+    }
+    case "ACTIVITY_SNAPSHOT": {
+      return activityType ? `${activityType} 已同步` : block.summary || "活动内容已同步";
+    }
+    case "MESSAGES_SNAPSHOT": {
+      return block.summary || "已同步历史消息";
+    }
+    case "REASONING_ENCRYPTED_VALUE": {
+      return "部分内容受保护，无法直接展示";
+    }
+    case "REASONING_END":
+    case "REASONING_MESSAGE_END":
+    case "THINKING_END":
+    case "THINKING_TEXT_MESSAGE_END": {
+      return "思考阶段结束";
+    }
+    case "REASONING_MESSAGE_CHUNK":
+    case "REASONING_MESSAGE_CONTENT":
+    case "THINKING_TEXT_MESSAGE_CONTENT": {
+      return "思考内容持续生成中";
+    }
+    case "REASONING_MESSAGE_START":
+    case "THINKING_TEXT_MESSAGE_START": {
+      return "准备输出思考片段";
+    }
+    case "REASONING_START":
+    case "THINKING_START": {
+      return "模型开始内部思考";
+    }
+    case "RUN_ERROR": {
+      return block.text?.trim() || block.summary || "运行过程中出现错误";
+    }
+    case "RUN_FINISHED": {
+      return "本轮回复已结束";
+    }
+    case "RUN_STARTED": {
+      return "正在准备本轮回复";
+    }
+    case "STATE_DELTA": {
+      return block.summary || "状态发生变化";
+    }
+    case "STATE_SNAPSHOT": {
+      return "已同步最新状态";
+    }
+    case "STEP_FINISHED": {
+      return stepName ? `${stepName} 已完成` : "执行完成";
+    }
+    case "STEP_STARTED": {
+      return stepName ? `进入 ${stepName}` : "开始执行";
+    }
+    case "TEXT_MESSAGE_CHUNK":
+    case "TEXT_MESSAGE_CONTENT": {
+      return "回复内容持续生成中";
+    }
+    case "TEXT_MESSAGE_END": {
+      return "回复内容生成完成";
+    }
+    case "TEXT_MESSAGE_START": {
+      return "准备输出内容";
+    }
+    case "TOOL_CALL_ARGS": {
+      return toolName ? `${toolName} 参数生成中` : "正在构建工具参数";
+    }
+    case "TOOL_CALL_END": {
+      return toolName ? `${toolName} 已结束` : "工具执行结束";
+    }
+    case "TOOL_CALL_RESULT": {
+      return toolName ? `${toolName} 已返回结果` : "工具结果已返回";
+    }
+    case "TOOL_CALL_START": {
+      return toolName ? `${toolName} 已发起` : "工具开始执行";
+    }
+    default: {
+      return block.summary || undefined;
+    }
+  }
+}
+
+function shouldHideEventPayload(
+  block: ReturnType<typeof getMessageEventBlocks>[number],
+  sourceItems: NonNullable<SourcesProps["items"]>,
+) {
+  if (sourceItems.length === 0) {
+    return false;
+  }
+
+  return (
+    block.event_type === "TOOL_CALL_RESULT" ||
+    block.event_type === "ACTIVITY_SNAPSHOT" ||
+    block.event_type === "MESSAGES_SNAPSHOT"
+  );
+}
+
+function shouldHideEventText(
+  block: ReturnType<typeof getMessageEventBlocks>[number],
+  sourceItems: NonNullable<SourcesProps["items"]>,
+) {
+  if (sourceItems.length === 0 || !block.text?.trim()) {
+    return false;
+  }
+
+  return looksLikeStructuredText(block.text);
+}
+
+function buildEventSections(
+  message: ChatMessageItem,
+  block: ReturnType<typeof getMessageEventBlocks>[number],
+) {
+  const eventData = formatEventData(block.data);
+  const sourceItems = getEventSourceItems(block.data);
+  const isSearchEvent = isSearchLikeEvent(block, sourceItems);
+  const sourceSection =
+    sourceItems.length > 0
+      ? h(Sources, {
+          defaultExpanded: sourceItems.length <= 3,
+          items: sourceItems,
+          title: `来源 ${sourceItems.length}`,
+        })
+      : null;
+  const textSection = !shouldHideEventText(block, sourceItems) && block.text
+    ? renderEventText(block.text, block.event_type, Boolean(message.streaming))
+    : null;
+  const payloadSection = !shouldHideEventPayload(block, sourceItems) && eventData
+    ? renderCodeBlock(eventData, "json")
+    : null;
+
+  return {
+    hasOnlySources: Boolean(sourceSection && !textSection && !payloadSection),
+    isSearchEvent,
+    sections: [
+      ...(isSearchEvent
+        ? [sourceSection, textSection, payloadSection]
+        : [textSection, sourceSection, payloadSection]),
+    ].filter(Boolean),
+  };
+}
+
+function shouldSuppressEventBlock(
+  message: ChatMessageItem,
+  block: ReturnType<typeof getMessageEventBlocks>[number],
+) {
+  const eventType = block.event_type;
+  const hasMainText = Boolean(getMessageTextContent(message, "text").trim());
+  const hasReasoning = Boolean(getThinkingContent(message).trim());
+
+  if (
+    hasMainText &&
+    (eventType === "TEXT_MESSAGE_START" ||
+      eventType === "TEXT_MESSAGE_CONTENT" ||
+      eventType === "TEXT_MESSAGE_CHUNK" ||
+      eventType === "TEXT_MESSAGE_END")
+  ) {
+    return true;
+  }
+
+  if (
+    hasReasoning &&
+    (eventType === "REASONING_START" ||
+      eventType === "REASONING_MESSAGE_START" ||
+      eventType === "REASONING_MESSAGE_CONTENT" ||
+      eventType === "REASONING_MESSAGE_CHUNK" ||
+      eventType === "REASONING_MESSAGE_END" ||
+      eventType === "REASONING_END" ||
+      eventType === "THINKING_START" ||
+      eventType === "THINKING_TEXT_MESSAGE_START" ||
+      eventType === "THINKING_TEXT_MESSAGE_CONTENT" ||
+      eventType === "THINKING_TEXT_MESSAGE_END" ||
+      eventType === "THINKING_END")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function getVisibleEventBlocks(message: ChatMessageItem) {
+  return getMessageEventBlocks(message).filter((block) => !shouldSuppressEventBlock(message, block));
+}
+
+function isHeaderStatusEvent(
+  block: ReturnType<typeof getMessageEventBlocks>[number],
+) {
+  return (
+    block.event_type === "RUN_STARTED" ||
+    block.event_type === "RUN_FINISHED" ||
+    block.event_type === "RUN_ERROR" ||
+    block.event_type === "STEP_STARTED" ||
+    block.event_type === "STEP_FINISHED"
+  );
+}
+
+function isRunStatusEvent(
+  block: ReturnType<typeof getMessageEventBlocks>[number],
+) {
+  return (
+    block.event_type === "RUN_STARTED" ||
+    block.event_type === "RUN_FINISHED" ||
+    block.event_type === "RUN_ERROR"
+  );
+}
+
+function isStepStatusEvent(
+  block: ReturnType<typeof getMessageEventBlocks>[number],
+) {
+  return block.event_type === "STEP_STARTED" || block.event_type === "STEP_FINISHED";
+}
+
+function getMessageHeaderStatusBlock(
+  message: ChatMessageItem,
+  events = getVisibleEventBlocks(message),
+) {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const block = events[index];
+    if (block && isRunStatusEvent(block)) {
+      return block;
+    }
+  }
+
+  for (let index = events.length - 1; index >= 0; index--) {
+    const block = events[index];
+    if (block && isHeaderStatusEvent(block)) {
+      return block;
+    }
+  }
+
+  return undefined;
+}
+
+function shouldPromoteHeaderStatusBlock(
+  message: ChatMessageItem,
+  events = getVisibleEventBlocks(message),
+) {
+  const headerBlock = getMessageHeaderStatusBlock(message, events);
+  if (!headerBlock) {
+    return false;
+  }
+
+  if (isRunStatusEvent(headerBlock)) {
+    return true;
+  }
+
+  if (isStepStatusEvent(headerBlock)) {
+    return true;
+  }
+
+  const hasPrimaryContent =
+    Boolean(getMessageTextContent(message, "text").trim()) ||
+    Boolean(getThinkingContent(message).trim()) ||
+    getMessageFileBlocks(message).length > 0;
+
+  const hasOtherBodyEvents = events.some(
+    (block) => block !== headerBlock && !isHeaderStatusEvent(block),
+  );
+
+  return hasPrimaryContent || hasOtherBodyEvents;
+}
+
+function getMessageBodyEventBlocks(message: ChatMessageItem) {
+  const events = getVisibleEventBlocks(message);
+  const headerBlock = getMessageHeaderStatusBlock(message, events);
+
+  return events.filter((block) => {
+    if (isRunStatusEvent(block)) {
+      return false;
+    }
+
+    if (shouldPromoteHeaderStatusBlock(message, events) && block === headerBlock) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+function renderEventContent(
+  message: ChatMessageItem,
+  block: ReturnType<typeof getMessageEventBlocks>[number],
+) {
+  const { sections } = buildEventSections(message, block);
+
+  if (sections.length === 0) {
+    return undefined;
+  }
+
+  if (sections.length === 1) {
+    return sections[0];
+  }
+
+  return h("div", { class: "space-y-3" }, sections);
+}
+
+function renderSingleMessageEvent(
+  message: ChatMessageItem,
+  block: ReturnType<typeof getMessageEventBlocks>[number],
+  index: number,
+) {
+  const key = `${message.id}-event-${block.event_key}-${index}`;
+  const detail = buildEventSections(message, block);
+  const content = detail.sections.length > 0 ? renderEventContent(message, block) : undefined;
+  const title = getEventDisplayTitle(block, getEventSourceItems(block.data));
+  const description = getEventDisplayDescription(block, getEventSourceItems(block.data));
+
+  if (detail.hasOnlySources && content) {
+    return content;
+  }
+
+  if (!content) {
+    return h(ThoughtChainItem, {
+      blink: Boolean(message.streaming && block.status === "running"),
+      description,
+      key,
+      status: getThoughtChainStatus(block.status),
+      title,
+    });
+  }
+
+  return h(ThoughtChain, {
+    defaultExpandedKeys: [],
+    items: [
+      {
+        blink: Boolean(message.streaming && block.status === "running"),
+        collapsible: true,
+        content,
+        description,
+        key,
+        status: getThoughtChainStatus(block.status),
+        title,
+      },
+    ],
+    line: false,
+  });
+}
+
+function renderMessageEvents(
+  message: ChatMessageItem,
+  events: ReturnType<typeof getMessageEventBlocks>,
+) {
+  if (events.length === 0) {
+    return null;
+  }
+
+  if (events.length === 1 && events[0]) {
+    return renderSingleMessageEvent(message, events[0], 0);
+  }
+
+  const items: ThoughtChainItemType[] = events.map((block, index) => {
+    const content = renderEventContent(message, block);
+    const sourceItems = getEventSourceItems(block.data);
+    return {
+      blink: Boolean(message.streaming && block.status === "running"),
+      collapsible: Boolean(content),
+      content,
+      description: getEventDisplayDescription(block, sourceItems),
+      key: `${message.id}-event-${block.event_key}-${index}`,
+      status: getThoughtChainStatus(block.status),
+      title: getEventDisplayTitle(block, sourceItems),
+    };
+  });
+
+  return h(ThoughtChain, {
+    defaultExpandedKeys: [],
+    items,
+    line: events.length > 1 ? "dashed" : false,
   });
 }
 
@@ -1690,6 +2396,7 @@ function getMessageContentRender(message: ChatMessageItem): BubbleProps["content
   return () => {
     const reasoningText = getThinkingContent(message);
     const text = getMessageTextContent(message, "text");
+    const events = getMessageBodyEventBlocks(message);
     const files = getMessageFileBlocks(message);
 
     if (message.message_type === "error") {
@@ -1711,6 +2418,7 @@ function getMessageContentRender(message: ChatMessageItem): BubbleProps["content
               ["对话 ID: ", message.conversation_id],
             )
           : null,
+        events.length > 0 ? h("div", { class: "border-t border-destructive/15 pt-3" }, [renderMessageEvents(message, events)]) : null,
       ]);
     }
 
@@ -1743,13 +2451,19 @@ function getMessageContentRender(message: ChatMessageItem): BubbleProps["content
               streaming: Boolean(message.streaming),
             })
           : null,
-        ...files.map((file, index) => renderMessageFileBlock(message, file, index)),
+        renderMessageFiles(message, files),
+        events.length > 0 ? h("div", { class: "border-t border-border/60 pt-3" }, [renderMessageEvents(message, events)]) : null,
       ].filter(Boolean),
     );
   };
 }
 
 function renderMessageHeader(message: ChatMessageItem) {
+  const events = getVisibleEventBlocks(message);
+  const headerStatusBlock = shouldPromoteHeaderStatusBlock(message, events)
+    ? getMessageHeaderStatusBlock(message, events)
+    : undefined;
+
   return h(
     "div",
     {
@@ -1758,7 +2472,25 @@ function renderMessageHeader(message: ChatMessageItem) {
         message.role === "user" ? "text-right" : "text-left",
       ],
     },
-    [getMessageDisplayName(message), " · ", parseDateLabel(message.created_time)],
+    [
+      headerStatusBlock
+        ? h(ThoughtChainItem, {
+            blink: Boolean(message.streaming && headerStatusBlock.status === "running"),
+            description: getEventDisplayDescription(
+              headerStatusBlock,
+              getEventSourceItems(headerStatusBlock.data),
+            ),
+            status: getThoughtChainStatus(headerStatusBlock.status),
+            style: { marginBottom: "8px" },
+            title: getEventDisplayTitle(
+              headerStatusBlock,
+              getEventSourceItems(headerStatusBlock.data),
+            ),
+            variant: "solid",
+          })
+        : null,
+      h("div", undefined, [getMessageDisplayName(message), " · ", parseDateLabel(message.created_time)]),
+    ].filter(Boolean),
   );
 }
 
@@ -2282,7 +3014,7 @@ const renderSenderFooter: NonNullable<SenderProps["footer"]> = (_, info) => {
                 disabled: sending.value || !activeConversationId.value,
                 icon: "mdi:broom",
                 onClick: () => {
-                  void clearConversationContext();
+                  confirmClearConversationContext();
                 },
                 title: "清除上下文",
               }),
@@ -2395,6 +3127,39 @@ const [SettingsModal, settingsModalApi] = useVbenModal({
   title: "参数设置",
 });
 
+const [RenameConversationForm, renameConversationFormApi] = useVbenForm({
+  layout: "vertical",
+  showDefaultActions: false,
+  schema: renameConversationSchema,
+});
+
+const [RenameConversationModal, renameConversationModalApi] = useVbenModal({
+  destroyOnClose: true,
+  async onConfirm() {
+    await submitRenameConversation();
+  },
+  onOpenChange(isOpen) {
+    if (isOpen) {
+      const data = renameConversationModalApi.getData<AIChatConversationItem>();
+      renameConversationFormApi.resetForm();
+      if (data) {
+        renameConversationFormData.value = data;
+        renameConversationFormApi.setValues({
+          title: data.title,
+        });
+      } else {
+        renameConversationFormData.value = undefined;
+      }
+      return;
+    }
+
+    if (!isOpen) {
+      resetRenameConversationState();
+    }
+  },
+  title: "重命名话题",
+});
+
 onMounted(async () => {
   await fetchProviders();
   await fetchMcps();
@@ -2448,85 +3213,69 @@ onBeforeUnmount(() => {
       <div class="border-b border-border px-5 py-4 md:px-6">
         <div class="flex flex-wrap items-start gap-3">
           <div class="min-w-0 flex-1">
-            <template v-if="isRenamingConversation && activeConversationId">
-              <div class="flex flex-wrap items-center gap-2">
-                <a-input
-                  v-model:value="renameTitle"
-                  class="max-w-[360px]"
-                  placeholder="请输入话题标题"
-                  @press-enter="submitRenameConversation"
-                />
-                <VbenButton size="sm" @click="submitRenameConversation"> 保存 </VbenButton>
-                <VbenButton size="sm" variant="outline" @click="cancelRenameConversation">
-                  取消
-                </VbenButton>
-              </div>
-            </template>
-            <template v-else>
-              <div class="flex min-w-0 items-center justify-between gap-4">
-                <div class="inline-flex min-w-0 max-w-full items-center gap-2">
-                  <div
-                    class="min-w-0 max-w-[220px] truncate text-[13px] font-semibold leading-7 text-foreground"
-                    :title="activeConversationTitle"
-                  >
-                    {{ activeConversationTitle }}
-                  </div>
-                  <span
-                    v-if="activeConversation?.is_pinned"
-                    class="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
-                  >
-                    置顶
-                  </span>
-                  <IconifyIcon
-                    class="size-3 shrink-0 text-muted-foreground"
-                    icon="mdi:chevron-right"
-                  />
-                  <a-popover placement="bottomLeft" trigger="click">
-                    <template #content>
-                      <div class="w-[280px] space-y-3">
-                        <div>
-                          <div class="mb-2 text-xs font-medium text-foreground">供应商</div>
-                          <a-select
-                            v-model:value="selectedProviderId"
-                            class="w-full"
-                            :disabled="sending || resourcesLoading"
-                            :options="providerOptions"
-                            placeholder="请选择供应商"
-                          />
-                        </div>
-                        <div>
-                          <div class="mb-2 text-xs font-medium text-foreground">模型</div>
-                          <a-select
-                            v-model:value="selectedModelId"
-                            class="w-full"
-                            :disabled="sending || resourcesLoading || modelOptions.length === 0"
-                            :options="modelOptions"
-                            placeholder="请选择模型"
-                          />
-                        </div>
-                      </div>
-                    </template>
-                    <button
-                      class="inline-flex min-w-0 max-w-[360px] items-center gap-1 rounded-md px-1 py-1 text-[13px] leading-7 text-foreground transition-colors hover:bg-accent/55"
-                      :disabled="sending || resourcesLoading"
-                      type="button"
-                    >
-                      <span class="truncate">{{ selectedProviderModelLabel }}</span>
-                      <IconifyIcon
-                        class="size-3.5 shrink-0 text-muted-foreground"
-                        icon="mdi:chevron-down"
-                      />
-                    </button>
-                  </a-popover>
-                </div>
+            <div class="flex min-w-0 items-center justify-between gap-4">
+              <div class="inline-flex min-w-0 max-w-full items-center gap-2">
                 <div
-                  class="min-w-0 flex-1 truncate text-right text-xs leading-tight text-muted-foreground"
-                  :title="activeConversationSubtitle"
+                  class="min-w-0 max-w-[220px] truncate text-[13px] font-semibold leading-7 text-foreground"
+                  :title="activeConversationTitle"
                 >
-                  {{ activeConversationSubtitle }}
+                  {{ activeConversationTitle }}
                 </div>
+                <span
+                  v-if="activeConversation?.is_pinned"
+                  class="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
+                >
+                  置顶
+                </span>
+                <IconifyIcon
+                  class="size-3 shrink-0 text-muted-foreground"
+                  icon="mdi:chevron-right"
+                />
+                <a-popover placement="bottomLeft" trigger="click">
+                  <template #content>
+                    <div class="w-[280px] space-y-3">
+                      <div>
+                        <div class="mb-2 text-xs font-medium text-foreground">供应商</div>
+                        <a-select
+                          v-model:value="selectedProviderId"
+                          class="w-full"
+                          :disabled="sending || resourcesLoading"
+                          :options="providerOptions"
+                          placeholder="请选择供应商"
+                        />
+                      </div>
+                      <div>
+                        <div class="mb-2 text-xs font-medium text-foreground">模型</div>
+                        <a-select
+                          v-model:value="selectedModelId"
+                          class="w-full"
+                          :disabled="sending || resourcesLoading || modelOptions.length === 0"
+                          :options="modelOptions"
+                          placeholder="请选择模型"
+                        />
+                      </div>
+                    </div>
+                  </template>
+                  <button
+                    class="inline-flex min-w-0 max-w-[360px] items-center gap-1 rounded-md px-1 py-1 text-[13px] leading-7 text-foreground transition-colors hover:bg-accent/55"
+                    :disabled="sending || resourcesLoading"
+                    type="button"
+                  >
+                    <span class="truncate">{{ selectedProviderModelLabel }}</span>
+                    <IconifyIcon
+                      class="size-3.5 shrink-0 text-muted-foreground"
+                      icon="mdi:chevron-down"
+                    />
+                  </button>
+                </a-popover>
               </div>
-            </template>
+              <div
+                class="min-w-0 flex-1 truncate text-right text-xs leading-tight text-muted-foreground"
+                :title="activeConversationSubtitle"
+              >
+                {{ activeConversationSubtitle }}
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -2594,15 +3343,12 @@ onBeforeUnmount(() => {
                 />
               </div>
             </div>
-            <div v-if="shouldRenderContextDividerAfter(item)" class="mb-3.5 w-full">
-              <div class="flex items-center gap-3 text-[11px] text-muted-foreground md:text-xs">
-                <div class="h-px flex-1 bg-border"></div>
-                <span class="shrink-0 rounded-full border border-border bg-background px-3 py-1">
-                  已清除上下文
-                </span>
-                <div class="h-px flex-1 bg-border"></div>
-              </div>
-            </div>
+            <BubbleDivider
+              v-if="shouldRenderContextDividerAfter(item)"
+              class="mb-3.5 w-full"
+              content="已清除上下文"
+              :divider-props="{ plain: true }"
+            />
           </template>
         </template>
       </div>
@@ -2631,7 +3377,7 @@ onBeforeUnmount(() => {
         <span>参数设置</span>
       </template>
       <template #append-footer>
-        <a-button danger type="primary" @click="resetModelSettings"> 重置 </a-button>
+        <AButton danger type="primary" @click="resetModelSettings"> 重置 </AButton>
       </template>
       <div
         class="grid h-full min-h-0 min-w-0 overscroll-contain lg:grid-cols-[220px_minmax(0,1fr)]"
@@ -2944,5 +3690,9 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </SettingsModal>
+
+    <RenameConversationModal content-class="px-4 py-4 md:px-5 md:py-5">
+      <RenameConversationForm />
+    </RenameConversationModal>
   </ColPage>
 </template>

@@ -1,10 +1,11 @@
-import type { AGUISSEChunk } from '#/plugins/ai/api';
+import type { XRequestOptions } from '@antdv-next/x-sdk';
 
 import type { AIChatProviderMessage } from '../data';
 import type { AIChatProviderRequest } from './chat-request';
 
+import type { AGUISSEChunk } from '#/plugins/ai/api';
+
 import { AbstractChatProvider } from '@antdv-next/x-sdk';
-import type { XRequestOptions } from '@antdv-next/x-sdk';
 
 import {
   createAGUIStreamAccumulator,
@@ -16,7 +17,6 @@ import {
   createProviderSeedMessage,
   providerMessageToChatMessage,
 } from '../data';
-
 import { createAIChatRequest } from './chat-request';
 
 type ProviderTransformMessage = {
@@ -44,18 +44,6 @@ export class AIChatProvider extends AbstractChatProvider<
     return requestParams.localMessages ?? [];
   }
 
-  transformParams(
-    requestParams: Partial<AIChatProviderRequest>,
-    _options: XRequestOptions<
-      AIChatProviderRequest,
-      AGUISSEChunk,
-      AIChatProviderMessage
-    >,
-  ) {
-    this.accumulator = createAGUIStreamAccumulator();
-    return requestParams as AIChatProviderRequest;
-  }
-
   transformMessage(
     info: ProviderTransformMessage,
   ): AIChatProviderMessage {
@@ -76,5 +64,17 @@ export class AIChatProvider extends AbstractChatProvider<
     }
 
     return providerMessageToChatMessage(originMessage, nextMessage);
+  }
+
+  transformParams(
+    requestParams: Partial<AIChatProviderRequest>,
+    _options: XRequestOptions<
+      AIChatProviderRequest,
+      AGUISSEChunk,
+      AIChatProviderMessage
+    >,
+  ) {
+    this.accumulator = createAGUIStreamAccumulator();
+    return requestParams as AIChatProviderRequest;
   }
 }

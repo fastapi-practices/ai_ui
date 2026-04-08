@@ -1,4 +1,5 @@
 import type {
+  AIChatEventMessageBlock,
   AIChatFileMessageBlock,
   AIChatMessage,
   AIChatMessageBlock,
@@ -101,6 +102,20 @@ export function createReasoningBlock(text = ''): AIChatReasoningMessageBlock {
 }
 
 function normalizeMessageBlock(block: AIChatMessageBlock): AIChatMessageBlock {
+  if (block.type === 'event') {
+    return {
+      data: block.data,
+      event_key: block.event_key,
+      event_type: block.event_type,
+      event_types: [...(block.event_types ?? [block.event_type])],
+      status: block.status ?? 'info',
+      summary: block.summary ?? '',
+      text: block.text ?? '',
+      title: block.title,
+      type: 'event',
+    } satisfies AIChatEventMessageBlock;
+  }
+
   if (block.type === 'file') {
     return {
       file_type: block.file_type ?? null,
@@ -142,6 +157,10 @@ export function getMessageFileBlocks(message: Pick<AIChatMessage, 'blocks'>) {
   return getBlocksByType(message, 'file');
 }
 
+export function getMessageEventBlocks(message: Pick<AIChatMessage, 'blocks'>) {
+  return getBlocksByType(message, 'event');
+}
+
 export function getEditableMessageText(message: Pick<AIChatMessage, 'blocks'>) {
   return getMessageTextContent(message, 'text');
 }
@@ -151,6 +170,7 @@ export function replaceMessageTextBlocks(
   content: string,
 ): ChatMessageItem {
   const nextBlocks = [
+    ...getBlocksByType(message, 'event'),
     ...getBlocksByType(message, 'file'),
     ...getBlocksByType(message, 'reasoning'),
     createTextBlock(content),
@@ -164,6 +184,15 @@ export function replaceMessageTextBlocks(
 
 export function hasRenderableMessageContent(message: Pick<AIChatMessage, 'blocks'>) {
   return (message.blocks ?? []).some((block) => {
+    if (block.type === 'event') {
+      return Boolean(
+        block.title ||
+          block.summary?.trim() ||
+          block.text?.trim() ||
+          block.data !== undefined,
+      );
+    }
+
     if (block.type === 'file') {
       return Boolean(block.url || block.name || block.mime_type || block.file_type);
     }
@@ -323,6 +352,10 @@ export function mergeAdjacentAssistantMessages(messages: ChatMessageItem[]) {
 }
 
 function getBlockMergeKey(block: AIChatMessageBlock) {
+  if (block.type === 'event') {
+    return `event:${block.event_key}`;
+  }
+
   if (block.type === 'file') {
     return `file:${block.file_type ?? ''}:${block.name ?? ''}:${block.url ?? ''}`;
   }
@@ -341,8 +374,33 @@ export function mergeMessageBlocks(
       (block) => getBlockMergeKey(block) === getBlockMergeKey(incoming),
     );
 
+    if (incoming.type === 'event') {
+      if (index === -1) {
+        merged.push(incoming);
+      } else {
+        const previous = merged[index] as AIChatEventMessageBlock;
+        merged[index] = {
+          ...previous,
+          ...incoming,
+          data: incoming.data ?? previous.data,
+          event_type: incoming.event_type,
+          event_types: [...new Set([
+              ...(previous.event_types ?? [previous.event_type]),
+              ...(incoming.event_types ?? [incoming.event_type]),
+              incoming.event_type,
+            ])],
+          status: incoming.status ?? previous.status,
+          summary: incoming.summary ?? previous.summary,
+          text: mergeModelContent(previous.text ?? '', incoming.text ?? ''),
+          title: incoming.title || previous.title,
+          type: 'event',
+        } satisfies AIChatEventMessageBlock;
+      }
+      continue;
+    }
+
     if (incoming.type === 'file') {
-      if (index < 0) {
+      if (index === -1) {
         merged.push(incoming);
       } else {
         merged[index] = { ...merged[index], ...incoming } as AIChatFileMessageBlock;
@@ -350,7 +408,7 @@ export function mergeMessageBlocks(
       continue;
     }
 
-    if (index < 0) {
+    if (index === -1) {
       merged.push(incoming);
       continue;
     }

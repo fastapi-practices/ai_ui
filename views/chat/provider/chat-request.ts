@@ -1,11 +1,11 @@
+import type { AIChatProviderMessage } from '../data';
+
 import type {
   AGUISSEChunk,
   AIChatCompletionRequest,
   AIChatRegenerateRequest,
   AIChatTransportMode,
 } from '#/plugins/ai/api';
-
-import type { AIChatProviderMessage } from '../data';
 
 import { XRequest } from '@antdv-next/x-sdk';
 

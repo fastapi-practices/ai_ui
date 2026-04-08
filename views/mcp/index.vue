@@ -17,9 +17,9 @@ import { useVbenVxeGrid } from '#/adapter/vxe-table';
 import { createAIMcpApi, deleteAIMcpApi, getAIMcpListApi, updateAIMcpApi } from '#/plugins/ai/api';
 
 import {
-  MCP_IMPORT_PLACEHOLDER,
   formatArgsInput,
   formatEnvInput,
+  MCP_IMPORT_PLACEHOLDER,
   mcpSchema,
   parseArgsInput,
   parseEnvInput,
