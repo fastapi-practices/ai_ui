@@ -19,10 +19,12 @@ import { createAIMcpApi, deleteAIMcpApi, getAIMcpListApi, updateAIMcpApi } from 
 import {
   formatArgsInput,
   formatEnvInput,
+  formatHeadersInput,
   MCP_IMPORT_PLACEHOLDER,
   mcpSchema,
   parseArgsInput,
   parseEnvInput,
+  parseHeadersInput,
   parseMcpImportJson,
   queryMcpSchema,
   useMcpColumns,
@@ -96,6 +98,7 @@ function onActionClick({ code, row }: OnActionClickParams<AIMcpResult>) {
           ...row,
           args: formatArgsInput(row.args),
           env: formatEnvInput(row.env),
+          headers: formatHeadersInput(row.headers),
         })
         .open();
       break;
@@ -142,9 +145,10 @@ const [ImportModal, importModalApi] = useVbenModal({
   },
 });
 
-type AIMcpFormValues = Omit<AIMcpParams, 'args' | 'env'> & {
+type AIMcpFormValues = Omit<AIMcpParams, 'args' | 'env' | 'headers'> & {
   args?: null | string;
   env?: null | string;
+  headers?: null | string;
   id?: number;
 };
 
@@ -173,7 +177,7 @@ const [Modal, modalApi] = useVbenModal({
         description: data.description?.trim() || undefined,
         env: parseEnvInput(data.env, '环境变量'),
         args: parseArgsInput(data.args),
-        headers: data.headers?.trim() || undefined,
+        headers: parseHeadersInput(data.headers, '请求头'),
         name: data.name,
         read_timeout: data.read_timeout,
         timeout: data.timeout,

@@ -1,11 +1,11 @@
-import type { AIChatProviderMessage } from '../data';
+import type { AIChatProtocolChunk } from '../protocols/types';
+import type { AIChatProviderMessage } from './message';
 
 import type {
-  AGUISSEChunk,
-  AIChatCompletionRequest,
-  AIChatRegenerateRequest,
+  AIChatCompletionParams,
+  AIChatRegenerateParams,
   AIChatTransportMode,
-} from '#/plugins/ai/api';
+} from '#/plugins/ai/api/chat';
 
 import { XRequest } from '@antdv-next/x-sdk';
 
@@ -14,13 +14,13 @@ import {
   readAIChatErrorMessage,
   resolveAIChatApiUrl,
   resolveAIChatTransportUrl,
-} from '#/plugins/ai/api';
+} from '#/plugins/ai/api/chat';
 
 export interface AIChatProviderRequest {
-  body: AIChatCompletionRequest | AIChatRegenerateRequest;
-  conversation_id?: string;
+  body: AIChatCompletionParams | AIChatRegenerateParams;
+  conversationId?: string;
   localMessages?: AIChatProviderMessage[];
-  message_id?: number;
+  messageId?: number;
   mode: AIChatTransportMode;
 }
 
@@ -30,7 +30,7 @@ export interface CreateAIChatRequestOptions {
 }
 
 export function createAIChatRequest(options: CreateAIChatRequestOptions = {}) {
-  return XRequest<AIChatProviderRequest, AGUISSEChunk, AIChatProviderMessage>(
+  return XRequest<AIChatProviderRequest, AIChatProtocolChunk, AIChatProviderMessage>(
     '__ai_chat_transport__',
     {
       callbacks: {

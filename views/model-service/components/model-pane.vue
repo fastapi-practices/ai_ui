@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { PaginationResult } from '#/types';
 import type { VbenFormProps } from '#/adapter/form';
 import type {
   OnActionClickParams,
@@ -11,7 +12,6 @@ import type {
   AIProviderModelResult,
   AIProviderResult,
 } from '#/plugins/ai/api';
-import type { PaginationResult } from '#/types';
 
 import { computed, ref } from 'vue';
 
@@ -47,7 +47,7 @@ const props = defineProps<{
 
 const EMPTY_PAGINATION: PaginationResult<AIModelResult> = {
   items: [],
-  links: null,
+  links: {},
   page: 1,
   size: 10,
   total: 0,

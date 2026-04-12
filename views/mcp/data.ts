@@ -4,6 +4,10 @@ import type { AIMcpParams, AIMcpResult } from '#/plugins/ai/api';
 
 import { $t } from '@vben/locales';
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 export const MCP_TYPE_OPTIONS = [
   { label: 'stdio', value: 0 },
   { label: 'sse', value: 1 },
@@ -184,9 +188,11 @@ export const mcpSchema: VbenFormSchema[] = [
   {
     component: 'Textarea',
     componentProps: {
-      autoSize: { minRows: 3, maxRows: 8 },
+      autoSize: { minRows: 4, maxRows: 10 },
+      placeholder: 'Authorization=Bearer your-token\nContent-Type=application/json',
     },
     fieldName: 'headers',
+    help: '格式为 KEY=VALUE，每行一个',
     label: '请求头',
     dependencies: {
       show: (values) => values?.type !== 0,
@@ -312,8 +318,15 @@ export function parseEnvInput(value: null | string | undefined, label: string) {
   return result;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
+export function formatHeadersInput(value?: null | Record<string, any>) {
+  return formatEnvInput(value);
+}
+
+export function parseHeadersInput(
+  value: null | string | undefined,
+  label: string,
+) {
+  return parseEnvInput(value, label);
 }
 
 export function parseMcpImportJson(value: string): AIMcpParams {
@@ -412,21 +425,15 @@ export function parseMcpImportJson(value: string): AIMcpParams {
     );
   }
 
-  let headers: string | undefined;
+  let headers: Record<string, string> | undefined;
   if (item.headers !== null && item.headers !== undefined && item.headers !== '') {
-    if (typeof item.headers === 'string') {
-      headers = item.headers.trim() || undefined;
-    } else if (isRecord(item.headers)) {
-      headers = JSON.stringify(
-        Object.fromEntries(
-          Object.entries(item.headers).map(([key, itemValue]) => [key, String(itemValue ?? '')]),
-        ),
-        null,
-        2,
-      );
-    } else {
-      throw new Error(`MCP ${name} 的 headers 必须是字符串或 JSON 对象`);
+    if (!isRecord(item.headers)) {
+      throw new Error(`MCP ${name} 的 headers 必须是 JSON 对象`);
     }
+
+    headers = Object.fromEntries(
+      Object.entries(item.headers).map(([key, itemValue]) => [key, String(itemValue ?? '')]),
+    );
   }
 
   const description = typeof item.description === 'string' && item.description.trim()

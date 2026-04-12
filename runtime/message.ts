@@ -6,7 +6,15 @@ import type {
   AIChatMessageDetail,
   AIChatReasoningMessageBlock,
   AIChatTextMessageBlock,
-} from '#/plugins/ai/api';
+} from './message-types';
+
+import {
+  normalizeAIChatEventBlock,
+  normalizeAIChatFileBlock,
+  normalizeAIChatMessageBlock,
+  normalizeAIChatTextLikeBlock,
+  uniqueAIChatEventTypes,
+} from './message-block';
 
 export type ChatMessageItem = AIChatMessageDetail & {
   id: string;
@@ -23,6 +31,14 @@ export interface AIChatProviderMessage {
   provider_id?: null | number;
   role: AIChatMessage['role'];
 }
+
+export type ChatTransientStatus =
+  | 'abort'
+  | 'error'
+  | 'loading'
+  | 'local'
+  | 'success'
+  | 'updating';
 
 export function buildMessageId(seedValue?: null | number | string) {
   return `${seedValue ?? Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -101,38 +117,6 @@ export function createReasoningBlock(text = ''): AIChatReasoningMessageBlock {
   };
 }
 
-function normalizeMessageBlock(block: AIChatMessageBlock): AIChatMessageBlock {
-  if (block.type === 'event') {
-    return {
-      data: block.data,
-      event_key: block.event_key,
-      event_type: block.event_type,
-      event_types: [...(block.event_types ?? [block.event_type])],
-      status: block.status ?? 'info',
-      summary: block.summary ?? '',
-      text: block.text ?? '',
-      title: block.title,
-      type: 'event',
-    } satisfies AIChatEventMessageBlock;
-  }
-
-  if (block.type === 'file') {
-    return {
-      file_type: block.file_type ?? null,
-      mime_type: block.mime_type ?? null,
-      name: block.name ?? null,
-      source_type: block.source_type ?? null,
-      type: 'file',
-      url: block.url ?? null,
-    } satisfies AIChatFileMessageBlock;
-  }
-
-  return {
-    text: block.text ?? '',
-    type: block.type,
-  } as AIChatReasoningMessageBlock | AIChatTextMessageBlock;
-}
-
 export function getBlocksByType<T extends AIChatMessageBlock['type']>(
   message: Pick<AIChatMessage, 'blocks'>,
   type: T,
@@ -207,7 +191,7 @@ export function normalizeMessage(
   activeConversationId?: null | string,
 ): ChatMessageItem {
   return {
-    blocks: (item.blocks ?? []).map((block) => normalizeMessageBlock(block)),
+    blocks: (item.blocks ?? []).map((block) => normalizeAIChatMessageBlock(block)),
     conversation_id: item.conversation_id ?? activeConversationId ?? null,
     created_time: item.created_time,
     id: buildMessageId(
@@ -367,9 +351,9 @@ export function mergeMessageBlocks(
   currentBlocks: AIChatMessageBlock[],
   incomingBlocks: AIChatMessageBlock[],
 ) {
-  const merged = currentBlocks.map((block) => normalizeMessageBlock(block));
+  const merged = currentBlocks.map((block) => normalizeAIChatMessageBlock(block));
 
-  for (const incoming of incomingBlocks.map((block) => normalizeMessageBlock(block))) {
+  for (const incoming of incomingBlocks.map((block) => normalizeAIChatMessageBlock(block))) {
     const index = merged.findIndex(
       (block) => getBlockMergeKey(block) === getBlockMergeKey(incoming),
     );
@@ -379,22 +363,22 @@ export function mergeMessageBlocks(
         merged.push(incoming);
       } else {
         const previous = merged[index] as AIChatEventMessageBlock;
-        merged[index] = {
+        merged[index] = normalizeAIChatEventBlock({
           ...previous,
           ...incoming,
           data: incoming.data ?? previous.data,
           event_type: incoming.event_type,
-          event_types: [...new Set([
-              ...(previous.event_types ?? [previous.event_type]),
-              ...(incoming.event_types ?? [incoming.event_type]),
-              incoming.event_type,
-            ])],
+          event_types: uniqueAIChatEventTypes(
+            previous.event_types ?? [previous.event_type],
+            incoming.event_types ?? [incoming.event_type],
+            incoming.event_type,
+          ),
           status: incoming.status ?? previous.status,
           summary: incoming.summary ?? previous.summary,
           text: mergeModelContent(previous.text ?? '', incoming.text ?? ''),
           title: incoming.title || previous.title,
           type: 'event',
-        } satisfies AIChatEventMessageBlock;
+        });
       }
       continue;
     }
@@ -403,7 +387,10 @@ export function mergeMessageBlocks(
       if (index === -1) {
         merged.push(incoming);
       } else {
-        merged[index] = { ...merged[index], ...incoming } as AIChatFileMessageBlock;
+        merged[index] = normalizeAIChatFileBlock({
+          ...(merged[index] as AIChatFileMessageBlock),
+          ...incoming,
+        });
       }
       continue;
     }
@@ -414,11 +401,11 @@ export function mergeMessageBlocks(
     }
 
     const previous = merged[index] as AIChatReasoningMessageBlock | AIChatTextMessageBlock;
-    merged[index] = {
+    merged[index] = normalizeAIChatTextLikeBlock({
       ...previous,
       text: mergeModelContent(previous.text ?? '', incoming.text ?? ''),
       type: incoming.type,
-    };
+    });
   }
 
   return merged;
@@ -445,7 +432,7 @@ export function providerMessageToChatMessage(
   incoming: AIChatMessage,
 ) {
   const nextMessage: AIChatProviderMessage = {
-    blocks: (incoming.blocks ?? []).map((block) => normalizeMessageBlock(block)),
+    blocks: (incoming.blocks ?? []).map((block) => normalizeAIChatMessageBlock(block)),
     conversation_id:
       incoming.conversation_id ?? originMessage?.conversation_id ?? null,
     created_time: incoming.created_time,
@@ -466,19 +453,72 @@ export function providerMessageToChatMessage(
   return nextMessage;
 }
 
+function resolveTransientEventBlockStatus(
+  block: AIChatEventMessageBlock,
+  status: ChatTransientStatus,
+): AIChatEventMessageBlock['status'] {
+  const currentStatus = block.status ?? 'info';
+
+  if (currentStatus !== 'running' && currentStatus !== 'info') {
+    return currentStatus;
+  }
+
+  switch (status) {
+    case 'abort': {
+      return 'abort';
+    }
+    case 'error': {
+      return 'error';
+    }
+    case 'success': {
+      return 'success';
+    }
+    default: {
+      return currentStatus;
+    }
+  }
+}
+
+function applyTransientEventBlockStatus(
+  item: ChatMessageItem,
+  status: ChatTransientStatus,
+): ChatMessageItem {
+  if (item.role !== 'assistant') {
+    return item;
+  }
+
+  return {
+    ...item,
+    blocks: item.blocks.map((block) => {
+      if (block.type !== 'event') {
+        return block;
+      }
+
+      return normalizeAIChatEventBlock({
+        ...block,
+        status: resolveTransientEventBlockStatus(block, status),
+      });
+    }),
+  };
+}
+
 export function buildTransientMessageItems(
   providerMessage: AIChatProviderMessage | undefined,
   fallbackIndex: number,
-  status: 'abort' | 'error' | 'loading' | 'local' | 'success' | 'updating',
+  status: ChatTransientStatus,
 ) {
   if (!providerMessage) {
     return [];
   }
 
-  return normalizeProviderMessage(providerMessage, fallbackIndex).map((item) => ({
-    ...item,
-    streaming:
-      item.role === 'assistant' &&
-      (status === 'loading' || status === 'updating'),
-  }));
+  return normalizeProviderMessage(providerMessage, fallbackIndex).map((item) => {
+    const nextItem = applyTransientEventBlockStatus(item, status);
+
+    return {
+      ...nextItem,
+      streaming:
+        nextItem.role === 'assistant' &&
+        (status === 'loading' || status === 'updating'),
+    };
+  });
 }

@@ -1,45 +1,38 @@
 <script setup lang="ts">
-import type { ComponentPublicInstance } from 'vue';
-
-import { nextTick, onMounted, ref } from 'vue';
+import { nextTick, onMounted, onUpdated, ref } from 'vue';
 
 import { Sender } from '@antdv-next/x';
 
-type SenderInstance = ComponentPublicInstance<{
-  nativeElement?: HTMLElement;
-}>;
+const rootRef = ref<HTMLElement>();
 
-const senderRef = ref<null | SenderInstance>(null);
-
-async function syncTextareaAccessibilityAttrs() {
-  await nextTick();
-
-  const rootElement =
-    senderRef.value?.nativeElement ?? (senderRef.value?.$el as HTMLElement);
-  const textareaElement = rootElement?.querySelector('textarea');
-
-  if (!(textareaElement instanceof HTMLTextAreaElement)) {
+function syncSenderTextareaAttrs() {
+  const textarea = rootRef.value?.querySelector('textarea');
+  if (!textarea) {
     return;
   }
 
-  if (!textareaElement.name) {
-    textareaElement.name = 'ai-chat-message';
-  }
+  textarea.setAttribute('id', 'chat-message-input');
+  textarea.setAttribute('name', 'chat-message');
+}
 
-  if (!textareaElement.id) {
-    textareaElement.id = 'ai-chat-message';
-  }
+async function updateSenderTextareaAttrs() {
+  await nextTick();
+  syncSenderTextareaAttrs();
 }
 
 onMounted(() => {
-  void syncTextareaAccessibilityAttrs();
+  void updateSenderTextareaAttrs();
+});
+
+onUpdated(() => {
+  void updateSenderTextareaAttrs();
 });
 </script>
 
 <template>
-  <div class="bg-card px-5 pb-5 pt-4 md:px-6 md:pb-6 md:pt-4">
+  <div ref="rootRef" class="bg-card px-5 pb-5 pt-4 md:px-6 md:pb-6 md:pt-4">
     <div class="relative">
-      <Sender ref="senderRef" v-bind="$attrs" />
+      <Sender v-bind="$attrs" />
     </div>
   </div>
 </template>

@@ -13,25 +13,27 @@
 
 ## 依赖说明
 
-这个仓库是 `pnpm workspace` monorepo，并统一使用 `catalog:` 管理依赖来源。
+这个仓库是 `pnpm workspace` monorepo，并统一使用 `catalog:` 管理依赖来源
 
-如果缺少相关依赖，需要手动在根目录 `pnpm-workspace.yaml` 的 `catalog` 中添加：
-
-```yaml
-catalog:
-  "@antdv-next/x": ^0.1.0
-  "@antdv-next/x-markdown": ^0.0.2
-  "@antdv-next/x-sdk": ^0.0.2
-```
-
-应用包 `apps/web-antdv-next/package.json` 中与 AI 插件直接相关的依赖为：
+如果缺少相关依赖，需要手动 `apps/web-antdv-next/package.json` 中添加：
 
 ```json
 {
   "dependencies": {
     "@antdv-next/x": "catalog:",
     "@antdv-next/x-markdown": "catalog:",
-    "@antdv-next/x-sdk": "catalog:"
+    "@antdv-next/x-sdk": "catalog:",
+    "@ag-ui/core": "catalog:"
   }
 }
+```
+
+在根目录 `pnpm-workspace.yaml` 的 `catalog` 中添加：
+
+```yaml
+catalog:
+  '@ag-ui/core': ^0.0.52
+  '@antdv-next/x': ^0.3.0
+  '@antdv-next/x-markdown': ^0.0.2
+  '@antdv-next/x-sdk': ^0.0.2
 ```
