@@ -19,7 +19,6 @@ import { AG_UI_AI_CHAT_PROTOCOL_NAME } from '../types';
 import { normalizeAGUIConversationDetail } from './deserialize';
 import {
   buildAGUIEventPresentation,
-  getAGUIThoughtChainStatus,
   shouldRenderAGUIEventTextAsCode,
   shouldSuppressAGUIEventBlock,
 } from './event-presentation';
@@ -172,9 +171,6 @@ export function createAGUIProtocolDriver(): AIChatProtocolDriver {
     ): AIChatConversationDetail {
       return normalizeAGUIConversationDetail(detail);
     },
-    getThoughtChainStatus(status) {
-      return getAGUIThoughtChainStatus(status);
-    },
     shouldRenderEventTextAsCode(text, eventType) {
       return shouldRenderAGUIEventTextAsCode(text, eventType);
     },
@@ -186,7 +182,6 @@ export function createAGUIProtocolDriver(): AIChatProtocolDriver {
 
 export {
   buildAGUIEventPresentation,
-  getAGUIThoughtChainStatus,
   shouldRenderAGUIEventTextAsCode,
   shouldSuppressAGUIEventBlock,
 } from './event-presentation';

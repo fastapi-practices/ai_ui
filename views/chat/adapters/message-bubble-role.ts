@@ -4,7 +4,6 @@ import type {
   BubbleListProps,
   BubbleProps,
   FileCardProps,
-  ThoughtChainItemType,
 } from '@antdv-next/x';
 
 import type { FunctionalComponent, VNodeArrayChildren, VNodeChild } from 'vue';
@@ -27,7 +26,6 @@ import {
   Mermaid,
   Sources,
   Think,
-  ThoughtChain,
 } from '@antdv-next/x';
 import { XMarkdown } from '@antdv-next/x-markdown';
 import { Avatar as AAvatar } from 'antdv-next';
@@ -62,15 +60,6 @@ export interface CreateChatBubbleListRoleOptions {
 }
 
 const MARKDOWN_STREAM_FALLBACK_COMPONENT = 'incomplete-markdown-fragment';
-const THOUGHT_CHAIN_BOOTSTRAP_EVENT_TYPES = new Set([
-  'REASONING_MESSAGE_START',
-  'REASONING_START',
-  'RUN_STARTED',
-  'STEP_STARTED',
-  'TEXT_MESSAGE_START',
-  'THINKING_START',
-  'THINKING_TEXT_MESSAGE_START',
-]);
 
 function getBubbleListMessage(item: BubbleItemType) {
   const message = item.extraInfo?.message;
@@ -162,18 +151,9 @@ function getMessageBubbleClasses(
   };
 }
 
-function hasMeaningfulVisibleEventContent(
-  message: ChatMessageItem,
-  protocolDriver: AIChatProtocolDriver,
-) {
-  return getVisibleEventBlocks(message, protocolDriver).some(
-    (block) => !THOUGHT_CHAIN_BOOTSTRAP_EVENT_TYPES.has(block.event_type),
-  );
-}
-
 function isMessageBubbleLoading(
   message: ChatMessageItem,
-  protocolDriver: AIChatProtocolDriver,
+  _protocolDriver: AIChatProtocolDriver,
 ) {
   if (message.role !== 'assistant' || !message.streaming) {
     return false;
@@ -191,7 +171,7 @@ function isMessageBubbleLoading(
     return false;
   }
 
-  return !hasMeaningfulVisibleEventContent(message, protocolDriver);
+  return true;
 }
 
 function formatJsonCodeBlock(content: string) {
@@ -514,166 +494,238 @@ function renderEventContent(params: {
   return h('div', { class: 'space-y-3' }, sections);
 }
 
-function getMessageEventThoughtChainStatus(
-  message: ChatMessageItem,
-  block: AIChatEventMessageBlock,
-  protocolDriver: AIChatProtocolDriver,
-) {
-  const status = protocolDriver.getThoughtChainStatus(block.status);
-
-  if (status) {
-    return status;
-  }
-
-  if (message.streaming) {
-    return 'loading';
-  }
-
-  if (block.status === 'info') {
-    return 'success';
-  }
-
-  return undefined;
+function normalizeReferenceText(value: string) {
+  return value
+    .toLowerCase()
+    .replaceAll(/[`*_#[\]()<>|]/gu, ' ')
+    .replaceAll(/\s+/gu, ' ')
+    .trim();
 }
 
-function buildMessageEventThoughtChainItem(params: {
+function pushReferenceTerm(terms: Set<string>, value: unknown) {
+  if (typeof value !== 'string') {
+    return;
+  }
+
+  const normalized = normalizeReferenceText(value);
+  if (!normalized || normalized.length < 2) {
+    return;
+  }
+
+  terms.add(normalized);
+
+  if (/^https?:\/\//iu.test(value.trim())) {
+    try {
+      const url = new URL(value.trim());
+      const hostTerm = normalizeReferenceText(url.hostname.replace(/^www\./iu, ''));
+      if (hostTerm.length >= 2) {
+        terms.add(hostTerm);
+      }
+    } catch {
+      // Ignore invalid urls in event payloads.
+    }
+  }
+}
+
+function collectEventDataReferenceTerms(
+  value: unknown,
+  terms: Set<string>,
+  depth = 0,
+) {
+  if (depth > 2 || value === null || value === undefined) {
+    return;
+  }
+
+  if (typeof value === 'string') {
+    pushReferenceTerm(terms, value);
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 8)) {
+      collectEventDataReferenceTerms(item, terms, depth + 1);
+    }
+    return;
+  }
+
+  if (typeof value !== 'object') {
+    return;
+  }
+
+  for (const nested of Object.values(value as Record<string, unknown>).slice(0, 10)) {
+    collectEventDataReferenceTerms(nested, terms, depth + 1);
+  }
+}
+
+function getEventReferenceTerms(
+  block: AIChatEventMessageBlock,
+  detail: ReturnType<AIChatProtocolDriver['buildEventPresentation']>,
+) {
+  const terms = new Set<string>();
+
+  pushReferenceTerm(terms, block.title);
+  pushReferenceTerm(terms, block.summary);
+  pushReferenceTerm(terms, detail.title);
+  pushReferenceTerm(terms, detail.description);
+  collectEventDataReferenceTerms(block.data, terms);
+
+  for (const section of detail.sections) {
+    if (section.kind === 'sources' && section.items) {
+      for (const item of section.items) {
+        pushReferenceTerm(terms, item.title);
+        pushReferenceTerm(terms, item.description);
+        pushReferenceTerm(terms, item.url);
+      }
+      continue;
+    }
+
+    if (section.kind === 'text') {
+      pushReferenceTerm(terms, section.text);
+    }
+  }
+
+  return [...terms];
+}
+
+function isSearchEventReferenced(messageText: string) {
+  const normalized = normalizeReferenceText(messageText);
+  return [
+    '来源',
+    '参考',
+    '资料',
+    '搜索',
+    '检索',
+    '网页',
+    '链接',
+    'link',
+    'reference',
+    'search',
+    'source',
+    'sources',
+  ].some((term) => normalized.includes(term));
+}
+
+function isEventReferencedInMessage(
+  messageText: string,
+  block: AIChatEventMessageBlock,
+  detail: ReturnType<AIChatProtocolDriver['buildEventPresentation']>,
+) {
+  const normalizedMessageText = normalizeReferenceText(messageText);
+  if (!normalizedMessageText) {
+    return false;
+  }
+
+  if (detail.isSearchEvent && isSearchEventReferenced(normalizedMessageText)) {
+    return true;
+  }
+
+  return getEventReferenceTerms(block, detail).some((term) =>
+    normalizedMessageText.includes(term),
+  );
+}
+
+function renderInlineEventCard(params: {
   block: AIChatEventMessageBlock;
+  content: VNodeChild;
+  detail: ReturnType<AIChatProtocolDriver['buildEventPresentation']>;
   index: number;
-  isDark: boolean;
   message: ChatMessageItem;
-  protocolDriver: AIChatProtocolDriver;
 }) {
   const key = `${params.message.id}-event-${params.block.event_key}-${params.index}`;
-  const detail = params.protocolDriver.buildEventPresentation(params.block);
-  const content = renderEventContent({
-    block: params.block,
-    isDark: params.isDark,
-    message: params.message,
-    protocolDriver: params.protocolDriver,
-  });
-  const status = getMessageEventThoughtChainStatus(
-    params.message,
-    params.block,
-    params.protocolDriver,
-  );
 
-  return {
-    defaultExpanded: Boolean(
-      content && (detail.hasOnlySources || detail.showRawPayloadByDefault),
-    ),
-    item: {
-      blink: Boolean(params.message.streaming && status === 'loading'),
-      collapsible: Boolean(content),
-      content,
-      description: detail.description,
+  return h(
+    'section',
+    {
       key,
-      status,
-      title: detail.title,
-    } satisfies ThoughtChainItemType,
-  };
+      class: [
+        'min-w-0 max-w-full overflow-hidden rounded-2xl border p-3',
+        params.detail.isSearchEvent
+          ? 'border-primary/20 bg-primary/[0.04]'
+          : 'border-border/70 bg-muted/25',
+      ].join(' '),
+    },
+    [
+      params.detail.title
+        ? h(
+            'div',
+            {
+              class:
+                'text-xs leading-5 font-medium break-words text-foreground/90',
+            },
+            params.detail.title,
+          )
+        : null,
+      params.detail.description
+        ? h(
+            'div',
+            {
+              class:
+                'mt-1 text-xs leading-5 break-words text-muted-foreground',
+            },
+            params.detail.description,
+          )
+        : null,
+      h(
+        'div',
+        {
+          class: [
+            'min-w-0 max-w-full',
+            params.detail.title || params.detail.description ? 'mt-3' : '',
+          ]
+            .filter(Boolean)
+            .join(' '),
+        },
+        [params.content],
+      ),
+    ].filter(Boolean),
+  );
 }
 
-function renderMessageEvents(params: {
+function renderReferencedEventCards(params: {
   events: AIChatEventMessageBlock[];
   isDark: boolean;
   message: ChatMessageItem;
   protocolDriver: AIChatProtocolDriver;
 }) {
-  if (params.events.length === 0) {
+  const messageText = getMessageTextContent(params.message, 'text');
+  if (!messageText.trim() || params.events.length === 0) {
     return null;
   }
 
-  const itemInfos = params.events.map((block, index) =>
-    buildMessageEventThoughtChainItem({
-      block,
-      index,
-      isDark: params.isDark,
-      message: params.message,
-      protocolDriver: params.protocolDriver,
-    }),
-  );
-  const items = itemInfos.map(({ item }) => item);
+  const cards = params.events
+    .map((block, index) => {
+      const detail = params.protocolDriver.buildEventPresentation(block);
+      const content = renderEventContent({
+        block,
+        isDark: params.isDark,
+        message: params.message,
+        protocolDriver: params.protocolDriver,
+      });
+
+      if (!content || !isEventReferencedInMessage(messageText, block, detail)) {
+        return null;
+      }
+
+      return renderInlineEventCard({
+        block,
+        content,
+        detail,
+        index,
+        message: params.message,
+      });
+    })
+    .filter(Boolean);
+
+  if (cards.length === 0) {
+    return null;
+  }
 
   return h(
-    Think,
+    'div',
     {
-      defaultExpanded: Boolean(params.message.streaming),
-      key: `${params.message.id}-events-${params.message.streaming ? 'streaming' : 'done'}`,
-      loading: Boolean(params.message.streaming),
-      title: params.message.streaming ? '执行轨迹生成中' : '执行轨迹',
+      class: 'min-w-0 max-w-full space-y-3',
     },
-    () =>
-      h(ThoughtChain, {
-        class: [
-          'min-w-0 w-full max-w-full',
-          '[&_.antd-thought-chain-node]:min-w-0',
-          '[&_.antd-thought-chain-node]:w-full',
-          '[&_.antd-thought-chain-node]:max-w-full',
-          '[&_.antd-thought-chain-node-box]:min-w-0',
-          '[&_.antd-thought-chain-node-box]:max-w-full',
-          '[&_.antd-thought-chain-node-box]:flex-1',
-          '[&_.antd-thought-chain-node-header]:min-w-0',
-          '[&_.antd-thought-chain-node-header]:max-w-full',
-          '[&_.antd-thought-chain-node-title]:min-w-0',
-          '[&_.antd-thought-chain-node-title]:max-w-full',
-          '[&_.antd-thought-chain-node-content]:min-w-0',
-          '[&_.antd-thought-chain-node-content]:w-full',
-          '[&_.antd-thought-chain-node-content]:max-w-full',
-          '[&_.antd-thought-chain-node-content-box]:min-w-0',
-          '[&_.antd-thought-chain-node-content-box]:w-full',
-          '[&_.antd-thought-chain-node-content-box]:max-w-full',
-          '[&_.antd-thought-chain-node-content-box]:overflow-hidden',
-          '[&_.antd-code-highlighter]:min-w-0',
-          '[&_.antd-code-highlighter]:w-full',
-          '[&_.antd-code-highlighter]:max-w-full',
-          '[&_.antd-code-highlighter-content]:min-w-0',
-          '[&_.antd-code-highlighter-content]:max-w-full',
-          '[&_.antd-code-highlighter-content]:overflow-auto',
-          '[&_.antd-code-highlighter-code]:min-w-0',
-          '[&_.antd-code-highlighter-code]:max-w-full',
-          '[&_.antd-code-highlighter-code]:overflow-auto',
-          '[&_.antd-code-highlighter-code>pre]:max-w-full',
-          '[&_.antd-code-highlighter-code>pre]:overflow-auto',
-        ].join(' '),
-        classes: {
-          item: 'min-w-0 w-full max-w-full',
-          itemContent: 'min-w-0 max-w-full',
-          itemFooter: 'min-w-0 max-w-full',
-          itemHeader: 'min-w-0 max-w-full',
-          root: 'min-w-0 w-full max-w-full',
-        },
-        defaultExpandedKeys: itemInfos
-          .filter(({ defaultExpanded }) => defaultExpanded)
-          .map(({ item }) => item.key)
-          .filter(Boolean),
-        items,
-        line: params.events.length > 1 ? 'dashed' : false,
-        styles: {
-          item: {
-            maxWidth: '100%',
-            minWidth: 0,
-            width: '100%',
-          },
-          itemContent: {
-            maxWidth: '100%',
-            minWidth: 0,
-            width: '100%',
-          },
-          itemFooter: {
-            maxWidth: '100%',
-            minWidth: 0,
-          },
-          itemHeader: {
-            maxWidth: '100%',
-            minWidth: 0,
-          },
-          root: {
-            maxWidth: '100%',
-            minWidth: 0,
-            width: '100%',
-          },
-        },
-      }),
+    cards,
   );
 }
 
@@ -688,6 +740,12 @@ export function renderChatMessageBubbleContent(
   const reasoningText = getThinkingContent(message);
   const text = getMessageTextContent(message, 'text');
   const events = getVisibleEventBlocks(message, options.protocolDriver);
+  const referencedEventCards = renderReferencedEventCards({
+    events,
+    isDark: options.isDark,
+    message,
+    protocolDriver: options.protocolDriver,
+  });
   const files = getMessageFileBlocks(message);
 
   if (message.message_type === 'error') {
@@ -710,14 +768,9 @@ export function renderChatMessageBubbleContent(
             ['对话 ID: ', message.conversation_id],
           )
         : null,
-      events.length > 0
+      referencedEventCards
         ? h('div', { class: 'border-t border-destructive/15 pt-3' }, [
-            renderMessageEvents({
-              events,
-              isDark: options.isDark,
-              message,
-              protocolDriver: options.protocolDriver,
-            }),
+            referencedEventCards,
           ])
         : null,
     ]);
@@ -746,30 +799,25 @@ export function renderChatMessageBubbleContent(
               }),
           )
         : null,
-      events.length > 0
-        ? h(
-            'div',
-            {
-              class: [
-                'min-w-0 max-w-full',
-                reasoningText ? 'border-t border-border/60' : '',
-              ],
-            },
-            [
-              renderMessageEvents({
-                events,
-                isDark: options.isDark,
-                message,
-                protocolDriver: options.protocolDriver,
-              }),
-            ],
-          )
-        : null,
       text
         ? h(MarkdownContent, {
             content: text,
             streaming: Boolean(message.streaming),
           })
+        : null,
+      referencedEventCards
+        ? h(
+            'div',
+            {
+              class: [
+                'min-w-0 max-w-full',
+                reasoningText || text ? 'border-t border-border/60 pt-3' : '',
+              ]
+                .filter(Boolean)
+                .join(' '),
+            },
+            [referencedEventCards],
+          )
         : null,
       renderMessageFiles(message, files),
     ].filter(Boolean),

@@ -1,4 +1,4 @@
-import type { SourcesProps, ThoughtChainItemType } from '@antdv-next/x';
+import type { SourcesProps } from '@antdv-next/x';
 
 import type { ChatMessageItem } from '#/plugins/ai/runtime/message';
 import type { AIChatEventMessageBlock } from '#/plugins/ai/runtime/message-types';
@@ -79,28 +79,6 @@ export function shouldRenderAGUIEventTextAsCode(
     eventType === 'REASONING_ENCRYPTED_VALUE' ||
     eventType === 'TOOL_CALL_ARGS'
   );
-}
-
-export function getAGUIThoughtChainStatus(
-  status?: AIChatEventMessageBlock['status'],
-): ThoughtChainItemType['status'] | undefined {
-  switch (status) {
-    case 'abort': {
-      return 'abort';
-    }
-    case 'error': {
-      return 'error';
-    }
-    case 'running': {
-      return 'loading';
-    }
-    case 'success': {
-      return 'success';
-    }
-    default: {
-      return undefined;
-    }
-  }
 }
 
 function isExternalUrl(value: string) {

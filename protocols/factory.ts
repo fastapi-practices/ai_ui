@@ -1,4 +1,4 @@
-import type { SourcesProps, ThoughtChainItemType } from '@antdv-next/x';
+import type { SourcesProps } from '@antdv-next/x';
 
 import type {
   AIChatCompletionParams,
@@ -40,8 +40,6 @@ export interface AIChatProtocolEventPresentationResult {
   title?: string;
 }
 
-export type AIChatProtocolThoughtChainStatus = ThoughtChainItemType['status'];
-
 export interface AIChatProtocolDriver {
   buildEventPresentation(
     block: AIChatEventMessageBlock,
@@ -54,9 +52,6 @@ export interface AIChatProtocolDriver {
     AIChatProtocolChunk,
     AIChatProviderMessage
   >;
-  getThoughtChainStatus(
-    status?: AIChatEventMessageBlock['status'],
-  ): AIChatProtocolThoughtChainStatus | undefined;
   name: AIChatProtocolName;
   normalizeConversationDetail(
     detail: AIChatConversationDetailResult,
