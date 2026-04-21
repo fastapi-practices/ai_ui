@@ -19,15 +19,6 @@ export const PROVIDER_TYPE_OPTIONS = [
   { label: 'Type 5', value: 5 },
 ];
 
-export const PROVIDER_TYPE_TAG_OPTIONS = [
-  { color: 'processing', label: 'OpenAI', value: 0 },
-  { color: 'purple', label: 'Anthropic', value: 1 },
-  { color: 'success', label: 'Google', value: 2 },
-  { color: 'warning', label: 'xAI', value: 3 },
-  { color: 'geekblue', label: 'OpenRouter', value: 4 },
-  { color: 'default', label: 'Type 5', value: 5 },
-];
-
 export function buildProviderNameMap(providers: AIProviderResult[]) {
   return new Map(providers.map((item) => [item.id, item.name]));
 }
@@ -164,33 +155,6 @@ export function createProviderSchema(): VbenFormSchema[] {
   ];
 }
 
-export const providerSchema: VbenFormSchema[] = createProviderSchema();
-
-export const queryProviderSchema: VbenFormSchema[] = [
-  {
-    component: 'Input',
-    fieldName: 'name',
-    label: '供应商名称',
-  },
-  {
-    component: 'Select',
-    componentProps: {
-      allowClear: true,
-      options: PROVIDER_TYPE_OPTIONS,
-    },
-    fieldName: 'type',
-    label: '供应商类型',
-  },
-  {
-    component: 'Select',
-    componentProps: {
-      allowClear: true,
-      options: getDictOptions(DictEnum.SYS_STATUS),
-    },
-    fieldName: 'status',
-    label: '状态',
-  },
-];
 
 export function createModelSchema(): VbenFormSchema[] {
   return [

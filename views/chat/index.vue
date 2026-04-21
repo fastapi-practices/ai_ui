@@ -17,16 +17,14 @@ import type {
   AIChatComposerParams,
   AIChatConversationResult,
 } from '#/plugins/ai/api/chat';
-import type { AIChatProviderRequest } from '#/plugins/ai/runtime/chat-request';
 import type {
   AIChatProviderMessage,
   ChatMessageItem,
 } from '#/plugins/ai/runtime/message';
+import type { AIChatProviderRequest } from '#/plugins/ai/runtime/use-chat-stream';
 
 import {
   computed,
-  h,
-  nextTick,
   onActivated,
   onBeforeUnmount,
   onMounted,
@@ -38,20 +36,9 @@ import { ColPage, confirm, useVbenModal } from '@vben/common-ui';
 import { IconifyIcon } from '@vben/icons';
 import { usePreferences } from '@vben/preferences';
 
-import {
-  BubbleList,
-  Suggestion,
-  Welcome,
-} from '@antdv-next/x';
+import { BubbleList, Suggestion, Welcome } from '@antdv-next/x';
 import { useClipboard } from '@vueuse/core';
-import {
-  Button as AButton,
-  Empty as AEmpty,
-  Flex as AFlex,
-  Spin as ASpin,
-  message,
-  Popover,
-} from 'antdv-next';
+import { Button as AButton, Spin as ASpin, message } from 'antdv-next';
 
 import { useVbenForm } from '#/adapter/form';
 import {
@@ -93,38 +80,11 @@ import {
 import ChatSender from './components/chat-sender.vue';
 import ChatSettingsPanel from './components/chat-settings-panel.vue';
 import ChatSidebar from './components/chat-sidebar.vue';
+import { useChatScroll } from './composables/use-chat-scroll';
 import { useChatSession } from './composables/use-chat-session';
-
-type ThinkingPanelState = {
-  autoOpened: boolean;
-  expanded: boolean;
-};
-
-type ChatGenerationType = NonNullable<AIChatComposerParams['generation_type']>;
-type ChatThinkingValue = AIChatComposerParams['thinking'];
-type ChatWebSearchType = NonNullable<AIChatComposerParams['web_search']>;
-interface ChatSessionScopedConfig {
-  enableBuiltinTools: boolean;
-  generationType: ChatGenerationType;
-  modelId?: string;
-  parallelToolCalls: boolean;
-  providerId?: number;
-  selectedMcpIds: number[];
-  thinking: ChatThinkingValue;
-  webSearch: ChatWebSearchType;
-}
-
-const DEFAULT_CHAT_SESSION_SCOPED_CONFIG: Omit<
-  ChatSessionScopedConfig,
-  'modelId' | 'providerId'
-> = {
-  enableBuiltinTools: true,
-  generationType: 'text',
-  parallelToolCalls: true,
-  selectedMcpIds: [],
-  thinking: undefined,
-  webSearch: 'builtin',
-};
+import { useChatSettings } from './composables/use-chat-settings';
+import { useSenderToolbar } from './composables/use-sender-toolbar';
+import { useThinkingPanel } from './composables/use-thinking-panel';
 
 const currentChatProtocol = createAIChatProtocolDriver(
   DEFAULT_AI_CHAT_PROTOCOL_NAME,
@@ -149,12 +109,15 @@ const models = ref<AIModelResult[]>([]);
 const mcps = ref<AIMcpResult[]>([]);
 const quickPhrases = ref<AIQuickPhraseResult[]>([]);
 
-const messageContainerRef = ref<HTMLElement>();
-const autoFollowMessageScroll = ref(true);
-let suppressNextMessageScrollEvent = false;
-
 const resourcesLoading = ref(false);
-const quickPhraseLoading = ref(false);
+
+const {
+  autoFollowMessageScroll,
+  handleMessageContainerScroll,
+  scrollToBottom,
+  scrollToTop,
+} = useChatScroll();
+
 const {
   abort: abortTransientRequest,
   chatProvider,
@@ -168,28 +131,18 @@ const {
 });
 const sending = computed(() => isRequesting.value);
 
-const maxTokens = ref<number>();
-const temperature = ref(1);
-const topP = ref<number>();
-const timeout = ref<number>();
-const seed = ref<number>();
-const presencePenalty = ref<number>();
-const frequencyPenalty = ref<number>();
-const generationType = ref<ChatGenerationType>('text');
-const parallelToolCalls = ref(true);
-const thinking = ref<ChatThinkingValue>(undefined);
-const enableBuiltinTools = ref(true);
-const selectedMcpIds = ref<number[]>([]);
-const webSearch = ref<ChatWebSearchType>('builtin');
-const stopSequences = ref('');
-const extraHeaders = ref('');
-const extraBody = ref('');
-const logitBias = ref('');
-const quickPhrasePopoverOpen = ref(false);
-const conversationSessionConfigs = ref<Record<string, ChatSessionScopedConfig>>(
-  {},
-);
-const thinkingPanelStates = ref<Record<string, ThinkingPanelState>>({});
+function resetComposerState(clearPrompt = false) {
+  editingMessage.value = undefined;
+  regeneratingMessageIndex.value = undefined;
+  if (clearPrompt) {
+    prompt.value = '';
+  }
+}
+
+function stopStreaming() {
+  abortTransientRequest();
+}
+
 const renameConversationFormData = ref<AIChatConversationResult>();
 const {
   activeConversation,
@@ -236,6 +189,41 @@ const {
   transientRequestError,
 });
 
+// Chat settings needs refs from useChatSession for its watchers
+const {
+  GENERATION_TYPE_OPTIONS,
+  THINKING_OPTIONS,
+  WEB_SEARCH_OPTIONS,
+  enableBuiltinTools,
+  extraBody,
+  extraHeaders,
+  frequencyPenalty,
+  generationType,
+  generationTypeButtonLabel,
+  hasAdvancedSettings,
+  logitBias,
+  maxTokens,
+  parallelToolCalls,
+  presencePenalty,
+  rememberConversationSessionConfig,
+  resetModelSettings,
+  seed,
+  selectedMcpIds,
+  stopSequences,
+  temperature,
+  thinking,
+  thinkingButtonLabel,
+  timeout,
+  topP,
+  webSearch,
+  webSearchButtonLabel,
+} = useChatSettings({
+  activeConversationDetail,
+  activeConversationId,
+  selectedModelId,
+  selectedProviderId,
+});
+
 const renameConversationSchema: VbenFormSchema[] = [
   {
     component: 'Input' as const,
@@ -249,312 +237,8 @@ const renameConversationSchema: VbenFormSchema[] = [
   },
 ];
 
-const GENERATION_TYPE_OPTIONS: Array<{
-  desc: string;
-  label: string;
-  value: ChatGenerationType;
-}> = [
-  {
-    desc: '常规对话与文本生成',
-    label: '文本',
-    value: 'text',
-  },
-  {
-    desc: '让模型直接生成图片结果',
-    label: '图片',
-    value: 'image',
-  },
-];
-
-const WEB_SEARCH_OPTIONS: Array<{
-  desc: string;
-  label: string;
-  value: ChatWebSearchType;
-}> = [
-  {
-    desc: '优先使用模型内置搜索能力',
-    label: '内置搜索',
-    value: 'builtin',
-  },
-  {
-    desc: '使用 Exa 作为搜索来源',
-    label: 'Exa',
-    value: 'exa',
-  },
-  {
-    desc: '使用 Tavily 作为搜索来源',
-    label: 'Tavily',
-    value: 'tavily',
-  },
-  {
-    desc: '使用 DuckDuckGo 作为搜索来源',
-    label: 'DuckDuckGo',
-    value: 'duckduckgo',
-  },
-];
-
-const THINKING_OPTIONS: Array<{
-  desc: string;
-  key: string;
-  label: string;
-  value: ChatThinkingValue;
-}> = [
-  {
-    desc: '沿用模型默认思考行为',
-    key: 'default',
-    label: '默认',
-    value: undefined,
-  },
-  {
-    desc: '显式关闭思考',
-    key: 'off',
-    label: '关闭',
-    value: false,
-  },
-  {
-    desc: '最轻量的思考强度',
-    key: 'minimal',
-    label: 'minimal',
-    value: 'minimal',
-  },
-  {
-    desc: '较低思考强度',
-    key: 'low',
-    label: 'low',
-    value: 'low',
-  },
-  {
-    desc: '平衡型思考强度',
-    key: 'medium',
-    label: 'medium',
-    value: 'medium',
-  },
-  {
-    desc: '较高思考强度',
-    key: 'high',
-    label: 'high',
-    value: 'high',
-  },
-  {
-    desc: '最高思考强度',
-    key: 'xhigh',
-    label: 'xhigh',
-    value: 'xhigh',
-  },
-];
-
 let currentModelFetchId = 0;
 let hasInitialized = false;
-
-function isMessageContainerNearBottom(threshold = 48) {
-  const container = messageContainerRef.value;
-  if (!container) {
-    return true;
-  }
-
-  return (
-    container.scrollHeight - container.scrollTop - container.clientHeight <=
-    threshold
-  );
-}
-
-function syncAutoFollowMessageScroll() {
-  autoFollowMessageScroll.value = isMessageContainerNearBottom();
-}
-
-function handleMessageContainerScroll() {
-  if (suppressNextMessageScrollEvent) {
-    suppressNextMessageScrollEvent = false;
-    return;
-  }
-
-  syncAutoFollowMessageScroll();
-}
-
-function scrollToBottom(force = false) {
-  nextTick(() => {
-    const container = messageContainerRef.value;
-    if (!container || (!force && !autoFollowMessageScroll.value)) {
-      return;
-    }
-
-    const syncScroll = () => {
-      suppressNextMessageScrollEvent = true;
-      container.scrollTop = container.scrollHeight;
-    };
-
-    syncScroll();
-    requestAnimationFrame(() => {
-      syncScroll();
-      requestAnimationFrame(syncScroll);
-    });
-  });
-}
-
-function scrollToTop() {
-  nextTick(() => {
-    suppressNextMessageScrollEvent = true;
-    messageContainerRef.value?.scrollTo({ top: 0 });
-  });
-}
-
-function getThinkingPanelKey(message: ChatMessageItem) {
-  return message.id;
-}
-
-function getThinkingContent(message: ChatMessageItem) {
-  return getMessageTextContent(message, 'reasoning');
-}
-
-function hasThinkingContent(message: ChatMessageItem) {
-  return Boolean(getThinkingContent(message).trim());
-}
-
-function isThinkingExpanded(message: ChatMessageItem) {
-  return Boolean(
-    thinkingPanelStates.value[getThinkingPanelKey(message)]?.expanded,
-  );
-}
-
-function setThinkingExpanded(message: ChatMessageItem, expanded: boolean) {
-  const key = getThinkingPanelKey(message);
-  const current = thinkingPanelStates.value[key];
-  thinkingPanelStates.value = {
-    ...thinkingPanelStates.value,
-    [key]: {
-      autoOpened: current?.autoOpened ?? false,
-      expanded,
-    },
-  };
-}
-
-function resetGenerationSettings() {
-  maxTokens.value = undefined;
-  temperature.value = 1;
-  topP.value = undefined;
-  timeout.value = undefined;
-}
-
-function resetBehaviorSettings() {
-  seed.value = undefined;
-  presencePenalty.value = undefined;
-  frequencyPenalty.value = undefined;
-}
-
-function resetToolingSettings() {
-  parallelToolCalls.value = true;
-  enableBuiltinTools.value = true;
-}
-
-function resetPassthroughSettings() {
-  stopSequences.value = '';
-  extraHeaders.value = '';
-  extraBody.value = '';
-  logitBias.value = '';
-}
-
-function resetModelSettings() {
-  resetGenerationSettings();
-  resetBehaviorSettings();
-  resetToolingSettings();
-  resetPassthroughSettings();
-}
-
-function buildCurrentChatSessionScopedConfig(): ChatSessionScopedConfig {
-  return {
-    enableBuiltinTools: enableBuiltinTools.value,
-    generationType: generationType.value,
-    modelId: selectedModelId.value,
-    parallelToolCalls: parallelToolCalls.value,
-    providerId: selectedProviderId.value,
-    selectedMcpIds: [...selectedMcpIds.value],
-    thinking: thinking.value,
-    webSearch: webSearch.value,
-  };
-}
-
-function applyChatSessionScopedConfig(
-  config: Partial<ChatSessionScopedConfig>,
-  options: { preserveProviderModel?: boolean } = {},
-) {
-  if (!options.preserveProviderModel) {
-    selectedProviderId.value = config.providerId;
-    selectedModelId.value = config.modelId;
-  }
-
-  generationType.value =
-    config.generationType ?? DEFAULT_CHAT_SESSION_SCOPED_CONFIG.generationType;
-  parallelToolCalls.value =
-    config.parallelToolCalls ??
-    DEFAULT_CHAT_SESSION_SCOPED_CONFIG.parallelToolCalls;
-  thinking.value =
-    config.thinking ?? DEFAULT_CHAT_SESSION_SCOPED_CONFIG.thinking;
-  enableBuiltinTools.value =
-    config.enableBuiltinTools ??
-    DEFAULT_CHAT_SESSION_SCOPED_CONFIG.enableBuiltinTools;
-  selectedMcpIds.value = [...(config.selectedMcpIds ?? [])];
-  webSearch.value =
-    config.webSearch ?? DEFAULT_CHAT_SESSION_SCOPED_CONFIG.webSearch;
-}
-
-function rememberConversationSessionConfig(conversationId?: null | string) {
-  if (!conversationId) {
-    return;
-  }
-
-  conversationSessionConfigs.value = {
-    ...conversationSessionConfigs.value,
-    [conversationId]: buildCurrentChatSessionScopedConfig(),
-  };
-}
-
-function resetComposerState(clearPrompt = false) {
-  editingMessage.value = undefined;
-  regeneratingMessageIndex.value = undefined;
-  if (clearPrompt) {
-    prompt.value = '';
-  }
-}
-
-function stopStreaming() {
-  abortTransientRequest();
-}
-
-watch(activeConversationId, (conversationId, previousConversationId) => {
-  if (previousConversationId) {
-    rememberConversationSessionConfig(previousConversationId);
-  }
-
-  if (!conversationId) {
-    applyChatSessionScopedConfig(DEFAULT_CHAT_SESSION_SCOPED_CONFIG, {
-      preserveProviderModel: true,
-    });
-    return;
-  }
-
-  const config = conversationSessionConfigs.value[conversationId];
-  if (!config) {
-    applyChatSessionScopedConfig(DEFAULT_CHAT_SESSION_SCOPED_CONFIG, {
-      preserveProviderModel: true,
-    });
-    return;
-  }
-
-  applyChatSessionScopedConfig(config);
-});
-
-watch(activeConversationDetail, (detail) => {
-  if (!detail) {
-    return;
-  }
-
-  const config = conversationSessionConfigs.value[detail.conversation_id];
-  if (!config) {
-    return;
-  }
-
-  applyChatSessionScopedConfig(config);
-});
 
 async function fetchProviders() {
   resourcesLoading.value = true;
@@ -567,23 +251,6 @@ async function fetchProviders() {
 
 async function fetchMcps() {
   mcps.value = await getAllAIMcpApi();
-}
-
-function isMcpSelected(mcpId: number) {
-  return selectedMcpIds.value.includes(mcpId);
-}
-
-function toggleMcpSelection(mcpId: number) {
-  if (isMcpSelected(mcpId)) {
-    selectedMcpIds.value = selectedMcpIds.value.filter((id) => id !== mcpId);
-    return;
-  }
-
-  selectedMcpIds.value = [...selectedMcpIds.value, mcpId];
-}
-
-async function handleQuickPhrasePopoverOpenChange(open: boolean) {
-  quickPhrasePopoverOpen.value = open;
 }
 
 async function fetchModelsByProvider(providerId?: number) {
@@ -611,12 +278,7 @@ async function fetchModelsByProvider(providerId?: number) {
 }
 
 async function fetchQuickPhrases() {
-  quickPhraseLoading.value = true;
-  try {
-    quickPhrases.value = await getAllAIQuickPhraseApi();
-  } finally {
-    quickPhraseLoading.value = false;
-  }
+  quickPhrases.value = await getAllAIQuickPhraseApi();
 }
 
 async function refreshChatResources() {
@@ -626,12 +288,6 @@ async function refreshChatResources() {
     fetchMcps(),
     fetchQuickPhrases(),
   ]);
-}
-
-function appendQuickPhrase(item: AIQuickPhraseResult) {
-  prompt.value = prompt.value.trim()
-    ? `${prompt.value.trim()}\n${item.content}`
-    : item.content;
 }
 
 function beginEditMessage(
@@ -757,7 +413,9 @@ async function copyMessageContent(item: ChatMessageItem) {
   message.success('消息内容已复制');
 }
 
-async function startRenameConversation(conversation?: AIChatConversationResult) {
+async function startRenameConversation(
+  conversation?: AIChatConversationResult,
+) {
   const targetConversation = conversation || activeConversation.value;
   if (!targetConversation) {
     return;
@@ -975,15 +633,18 @@ async function submitChat(
     draftConversationTitle.value = submittedTitle;
   }
   autoFollowMessageScroll.value = true;
-  const completionRequest = buildChatCompletionRequest({
-    conversationId: targetConversationId,
-    history: activeMessages.value,
-    params: payload,
-    promptText:
-      regenerateMessageId === undefined ? submittedPromptText : undefined,
-  }, {
-    protocolName: currentChatProtocolOptions.protocolName,
-  });
+  const completionRequest = buildChatCompletionRequest(
+    {
+      conversationId: targetConversationId,
+      history: activeMessages.value,
+      params: payload,
+      promptText:
+        regenerateMessageId === undefined ? submittedPromptText : undefined,
+    },
+    {
+      protocolName: currentChatProtocolOptions.protocolName,
+    },
+  );
 
   transientRequestError.value = null;
   setTransientMessages([]);
@@ -1112,6 +773,12 @@ const transientMessages = computed<ChatMessageItem[]>(() => {
 
 const displayMessages = computed<ChatMessageItem[]>(() => {
   return [...activeMessages.value, ...transientMessages.value];
+});
+
+const { isThinkingExpanded, setThinkingExpanded } = useThinkingPanel({
+  autoFollowMessageScroll,
+  displayMessages,
+  scrollToBottom,
 });
 
 const bubbleListItems = computed(() => {
@@ -1274,47 +941,6 @@ const selectedProviderModelLabel = computed(() => {
   return `${selectedProviderLabel.value} / ${selectedModelLabel.value}`;
 });
 
-function hasGenerationSettingsChanged() {
-  return Boolean(
-    maxTokens.value !== undefined ||
-    temperature.value !== 1 ||
-    topP.value !== undefined ||
-    timeout.value !== undefined,
-  );
-}
-
-function hasBehaviorSettingsChanged() {
-  return Boolean(
-    seed.value !== undefined ||
-    presencePenalty.value !== undefined ||
-    frequencyPenalty.value !== undefined,
-  );
-}
-
-function hasToolingSettingsChanged() {
-  return Boolean(
-    parallelToolCalls.value !== true || enableBuiltinTools.value !== true,
-  );
-}
-
-function hasPassthroughSettingsChanged() {
-  return Boolean(
-    stopSequences.value.trim() ||
-    extraHeaders.value.trim() ||
-    extraBody.value.trim() ||
-    logitBias.value.trim(),
-  );
-}
-
-const hasAdvancedSettings = computed(() => {
-  return Boolean(
-    hasGenerationSettingsChanged() ||
-    hasBehaviorSettingsChanged() ||
-    hasToolingSettingsChanged() ||
-    hasPassthroughSettingsChanged(),
-  );
-});
-
 const canClearMessages = computed(() => {
   return Boolean(activeConversationId.value && activeMessages.value.length > 0);
 });
@@ -1331,29 +957,6 @@ const composerHint = computed(() => {
     return `正在重新生成第 ${regeneratingMessageIndex.value + 1} 条 AI 回复`;
   }
   return '';
-});
-
-const webSearchButtonLabel = computed(() => {
-  const activeOption = WEB_SEARCH_OPTIONS.find(
-    (item) => item.value === webSearch.value,
-  );
-
-  return activeOption?.label || '联网搜索';
-});
-
-const generationTypeButtonLabel = computed(() => {
-  const activeOption = GENERATION_TYPE_OPTIONS.find(
-    (item) => item.value === generationType.value,
-  );
-
-  return activeOption?.label || '文本';
-});
-
-const thinkingButtonLabel = computed(() => {
-  const activeOption = THINKING_OPTIONS.find(
-    (item) => item.value === thinking.value,
-  );
-  return activeOption?.label || '默认';
 });
 
 const senderAutoSize: NonNullable<SenderProps['autoSize']> = {
@@ -1385,11 +988,6 @@ const conversationListMenu = computed<ConversationsProps['menu']>(() =>
 
 function handleConversationActiveChange(value: number | string) {
   void selectConversation(String(value));
-}
-
-function handleQuickPhraseSelect(item: AIQuickPhraseResult) {
-  appendQuickPhrase(item);
-  quickPhrasePopoverOpen.value = false;
 }
 
 const suggestionItems = computed<SuggestionItem[]>(() => {
@@ -1458,574 +1056,39 @@ const bubbleListRole = computed<BubbleListProps['role']>(() =>
   }),
 );
 
-function renderFooterIconButton(options: {
-  disabled?: boolean;
-  icon: string;
-  onClick?: () => void;
-  title: string;
-}) {
-  return h(AButton, {
-    class: 'inline-flex size-8 items-center justify-center !px-0',
-    disabled: options.disabled,
-    htmlType: 'button',
-    icon: h(IconifyIcon, {
-      class: 'size-4',
-      icon: options.icon,
-    }),
-    onClick: () => {
-      options.onClick?.();
-    },
-    size: 'small',
-    title: options.title,
-    type: 'text',
+const { fetchQuickPhrases: fetchQuickPhrasesFromToolbar, renderSenderFooter } =
+  useSenderToolbar({
+    activeConversationId: computed(() => activeConversationId.value),
+    canClearMessages,
+    canCreateNewConversation,
+    composerHint,
+    confirmClearConversationContext,
+    confirmClearMessages,
+    createNewConversation,
+    enableBuiltinTools,
+    generationType,
+    generationTypeButtonLabel,
+    GENERATION_TYPE_OPTIONS,
+    hasAdvancedSettings,
+    mcps,
+    onOpenSettings: () => settingsModalApi.open(),
+    prompt,
+    selectedMcpIds,
+    selectedModelId,
+    selectedProviderId,
+    sending,
+    thinking,
+    thinkingButtonLabel,
+    THINKING_OPTIONS,
+    webSearch,
+    webSearchButtonLabel,
+    WEB_SEARCH_OPTIONS,
   });
-}
-
-function renderThinkingPopoverContent() {
-  return h('div', { class: 'w-[320px] space-y-3' }, [
-    h('div', { class: 'text-xs font-medium text-foreground' }, '思考链'),
-    h(
-      'div',
-      { class: 'space-y-2' },
-      THINKING_OPTIONS.map((item) =>
-        h(
-          'button',
-          {
-            key: item.key,
-            class: [
-              'flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors',
-              thinking.value === item.value
-                ? 'border-primary/35 bg-primary/10'
-                : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30',
-            ],
-            onClick: () => {
-              thinking.value = item.value;
-            },
-            type: 'button',
-          },
-          [
-            h(
-              'span',
-              {
-                class: [
-                  'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px]',
-                  thinking.value === item.value
-                    ? 'border-primary bg-primary text-primary-foreground'
-                    : 'border-border bg-background text-transparent',
-                ],
-              },
-              '✓',
-            ),
-            h('span', { class: 'min-w-0 flex-1' }, [
-              h(
-                'span',
-                { class: 'block text-xs font-medium text-foreground' },
-                item.label,
-              ),
-              h(
-                'span',
-                { class: 'mt-1 block text-[11px] text-muted-foreground/75' },
-                item.desc,
-              ),
-            ]),
-          ],
-        ),
-      ),
-    ),
-  ]);
-}
-
-function renderGenerationPopoverContent() {
-  return h('div', { class: 'w-[320px] space-y-3' }, [
-    h('div', { class: 'text-xs font-medium text-foreground' }, '生成类型'),
-    h(
-      'div',
-      { class: 'space-y-2' },
-      GENERATION_TYPE_OPTIONS.map((item) =>
-        h(
-          'button',
-          {
-            key: item.value,
-            class: [
-              'flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors',
-              generationType.value === item.value
-                ? 'border-primary/35 bg-primary/10'
-                : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30',
-            ],
-            onClick: () => {
-              generationType.value = item.value;
-            },
-            type: 'button',
-          },
-          [
-            h(
-              'span',
-              {
-                class: [
-                  'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px] leading-none',
-                  generationType.value === item.value
-                    ? 'border-primary bg-primary text-primary-foreground'
-                    : 'border-border bg-background text-transparent',
-                ],
-              },
-              '✓',
-            ),
-            h('span', { class: 'min-w-0 flex-1' }, [
-              h(
-                'span',
-                {
-                  class:
-                    'block truncate text-xs font-medium leading-4 text-foreground',
-                },
-                item.label,
-              ),
-              h(
-                'span',
-                {
-                  class:
-                    'mt-1 block truncate text-[11px] leading-4 text-muted-foreground/75',
-                },
-                item.desc,
-              ),
-            ]),
-          ],
-        ),
-      ),
-    ),
-  ]);
-}
-
-function renderWebSearchPopoverContent() {
-  return h('div', { class: 'w-[320px] space-y-3' }, [
-    h('div', { class: 'text-xs font-medium text-foreground' }, '网络搜索'),
-    h(
-      'div',
-      { class: 'space-y-2' },
-      WEB_SEARCH_OPTIONS.map((item) =>
-        h(
-          'button',
-          {
-            key: item.value,
-            class: [
-              'flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors',
-              webSearch.value === item.value
-                ? 'border-primary/35 bg-primary/10'
-                : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30',
-            ],
-            onClick: () => {
-              webSearch.value = item.value;
-            },
-            type: 'button',
-          },
-          [
-            h(
-              'span',
-              {
-                class: [
-                  'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px] leading-none',
-                  webSearch.value === item.value
-                    ? 'border-primary bg-primary text-primary-foreground'
-                    : 'border-border bg-background text-transparent',
-                ],
-              },
-              '✓',
-            ),
-            h('span', { class: 'min-w-0 flex-1' }, [
-              h(
-                'span',
-                {
-                  class:
-                    'block truncate text-xs font-medium leading-4 text-foreground',
-                },
-                item.label,
-              ),
-              h(
-                'span',
-                {
-                  class:
-                    'mt-1 block truncate text-[11px] leading-4 text-muted-foreground/75',
-                },
-                item.desc,
-              ),
-            ]),
-          ],
-        ),
-      ),
-    ),
-  ]);
-}
-
-function renderMcpPopoverContent() {
-  return h('div', { class: 'w-[360px] space-y-3' }, [
-    h('div', { class: 'text-xs font-medium text-foreground' }, 'MCP'),
-    mcps.value.length === 0
-      ? h(AEmpty, {
-          description: '暂无可用 MCP',
-          image: null,
-        })
-      : h(
-          'div',
-          {
-            class:
-              'flex max-h-[260px] min-h-[120px] flex-col gap-2 overflow-y-auto',
-          },
-          mcps.value.map((item) =>
-            h(
-              'button',
-              {
-                key: item.id,
-                class: [
-                  'flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
-                  isMcpSelected(item.id)
-                    ? 'border-primary/30 bg-primary/8 text-foreground'
-                    : 'border-border bg-background hover:border-primary/20 hover:bg-accent/30',
-                ],
-                onClick: () => {
-                  toggleMcpSelection(item.id);
-                },
-                title:
-                  `${item.name} ${item.description || item.command || item.url || `MCP #${item.id}`}`.trim(),
-                type: 'button',
-              },
-              [
-                h(
-                  'span',
-                  {
-                    class:
-                      'min-w-0 shrink-0 truncate text-xs font-medium text-foreground',
-                  },
-                  item.name,
-                ),
-                h(
-                  'span',
-                  {
-                    class:
-                      'min-w-0 flex-1 truncate text-[11px] text-muted-foreground/75',
-                  },
-                  item.description ||
-                    item.command ||
-                    item.url ||
-                    `MCP #${item.id}`,
-                ),
-                h(
-                  'span',
-                  {
-                    class: [
-                      'inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px] leading-none',
-                      isMcpSelected(item.id)
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-border bg-background text-transparent',
-                    ],
-                  },
-                  '✓',
-                ),
-              ],
-            ),
-          ),
-        ),
-  ]);
-}
-
-function renderQuickPhrasePopoverContent() {
-  let quickPhraseContent;
-  if (quickPhraseLoading.value) {
-    quickPhraseContent = h(
-      'div',
-      {
-        class:
-          'flex min-h-[120px] items-center justify-center text-muted-foreground',
-      },
-      [h(ASpin, { size: 'small' })],
-    );
-  } else if (quickPhrases.value.length === 0) {
-    quickPhraseContent = h(AEmpty, {
-      description: '暂无快捷短语',
-      image: null,
-    });
-  } else {
-    quickPhraseContent = h(
-      'div',
-      {
-        class:
-          'flex max-h-[260px] min-h-[120px] flex-col gap-2 overflow-y-auto',
-      },
-      quickPhrases.value.map((item) =>
-        h(
-          'button',
-          {
-            key: item.id,
-            class:
-              'flex w-full items-center gap-3 rounded-lg border border-border bg-background px-3 py-2 text-left transition-colors hover:border-primary/20 hover:bg-accent/30',
-            onClick: () => {
-              handleQuickPhraseSelect(item);
-            },
-            title: `${item.title} ${item.content}`.trim(),
-            type: 'button',
-          },
-          [
-            h(
-              'span',
-              {
-                class:
-                  'min-w-0 shrink-0 truncate text-xs font-medium text-foreground',
-              },
-              item.title,
-            ),
-            h(
-              'span',
-              {
-                class:
-                  'min-w-0 flex-1 truncate text-[11px] text-muted-foreground/75',
-              },
-              item.content,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  return h('div', { class: 'w-[360px] space-y-3' }, [
-    h('div', { class: 'text-xs font-medium text-foreground' }, '快捷短语'),
-    quickPhraseContent,
-  ]);
-}
-
-const renderSenderFooter: NonNullable<SenderProps['footer']> = (_, info) => {
-  const { LoadingButton, SendButton } = info.components;
-  const thinkingButtonTitle = `思考：${thinkingButtonLabel.value}`;
-
-  return h(
-    AFlex,
-    {
-      align: 'center',
-      gap: 'small',
-      justify: 'space-between',
-      vertical: false,
-      wrap: 'wrap',
-    },
-    {
-      default: () => [
-        h(
-          AFlex,
-          {
-            align: 'center',
-            gap: 'middle',
-            wrap: 'wrap',
-          },
-          {
-            default: () => [
-              renderFooterIconButton({
-                disabled: sending.value || !canCreateNewConversation.value,
-                icon: 'mdi:message-plus-outline',
-                onClick: createNewConversation,
-                title: '新建话题',
-              }),
-              h(
-                Popover,
-                { placement: 'topLeft', trigger: 'click' },
-                {
-                  content: () => renderGenerationPopoverContent(),
-                  default: () =>
-                    renderFooterIconButton({
-                      disabled: sending.value,
-                      icon:
-                        generationType.value === 'image'
-                          ? 'mdi:image'
-                          : 'mdi:image-outline',
-                      title: `生成类型：${generationTypeButtonLabel.value}`,
-                    }),
-                },
-              ),
-              h(
-                Popover,
-                { placement: 'topLeft', trigger: 'click' },
-                {
-                  content: () => renderThinkingPopoverContent(),
-                  default: () =>
-                    renderFooterIconButton({
-                      disabled: sending.value,
-                      icon: 'mdi:head-lightbulb-outline',
-                      title: thinkingButtonTitle,
-                    }),
-                },
-              ),
-              h(
-                Popover,
-                { placement: 'topLeft', trigger: 'click' },
-                {
-                  content: () => renderWebSearchPopoverContent(),
-                  default: () =>
-                    renderFooterIconButton({
-                      disabled: sending.value,
-                      icon: 'mdi:web',
-                      title: `联网搜索：${webSearchButtonLabel.value}`,
-                    }),
-                },
-              ),
-              h(
-                Popover,
-                {
-                  align: { overflow: { adjustX: false, adjustY: true } },
-                  placement: 'topLeft',
-                  trigger: 'click',
-                },
-                {
-                  content: () => renderMcpPopoverContent(),
-                  default: () =>
-                    renderFooterIconButton({
-                      disabled: sending.value,
-                      icon: 'simple-icons:modelcontextprotocol',
-                      title:
-                        selectedMcpIds.value.length > 0
-                          ? `已选择 ${selectedMcpIds.value.length} 个 MCP`
-                          : '选择 MCP',
-                    }),
-                },
-              ),
-              h(
-                Popover,
-                {
-                  align: { overflow: { adjustX: false, adjustY: true } },
-                  onOpenChange: handleQuickPhrasePopoverOpenChange,
-                  open: quickPhrasePopoverOpen.value,
-                  placement: 'topLeft',
-                  trigger: 'click',
-                },
-                {
-                  content: () => renderQuickPhrasePopoverContent(),
-                  default: () =>
-                    renderFooterIconButton({
-                      disabled: sending.value,
-                      icon: 'mdi:lightning-bolt-outline',
-                      title: '快捷短语',
-                    }),
-                },
-              ),
-              renderFooterIconButton({
-                disabled: sending.value,
-                icon: 'mdi:cog-outline',
-                onClick: () => {
-                  settingsModalApi.open();
-                },
-                title: hasAdvancedSettings.value
-                  ? '参数设置（已调整）'
-                  : '参数设置',
-              }),
-              renderFooterIconButton({
-                disabled: !canClearMessages.value,
-                icon: 'mdi:eraser-variant',
-                onClick: () => {
-                  confirmClearMessages();
-                },
-                title: '清空消息',
-              }),
-              renderFooterIconButton({
-                disabled: sending.value || !activeConversationId.value,
-                icon: 'mdi:broom',
-                onClick: () => {
-                  confirmClearConversationContext();
-                },
-                title: '清除上下文',
-              }),
-            ],
-          },
-        ),
-        h(
-          AFlex,
-          {
-            align: 'center',
-            class: 'w-full md:w-auto',
-            gap: 'small',
-            justify: 'flex-end',
-            wrap: 'wrap',
-          },
-          {
-            default: () => [
-              composerHint.value
-                ? h(
-                    'span',
-                    {
-                      class:
-                        'inline-flex max-w-full whitespace-pre-wrap text-left text-xs leading-5 text-muted-foreground',
-                    },
-                    composerHint.value,
-                  )
-                : null,
-              sending.value
-                ? h(LoadingButton, {
-                    type: 'default',
-                  })
-                : h(SendButton, {
-                    class:
-                      'inline-flex size-8 items-center justify-center !rounded-md !px-0',
-                    disabled:
-                      !selectedProviderId.value ||
-                      !selectedModelId.value ||
-                      !prompt.value.trim(),
-                    icon: h(IconifyIcon, {
-                      class: 'size-4',
-                      icon: 'mdi:send',
-                    }),
-                    shape: 'default',
-                    type: 'text',
-                  }),
-            ],
-          },
-        ),
-      ],
-    },
-  );
-};
 
 watch(
   selectedProviderId,
   async (providerId) => {
     await fetchModelsByProvider(providerId);
-  },
-  { immediate: true },
-);
-
-watch(
-  displayMessages,
-  (messages) => {
-    const nextStates: Record<string, ThinkingPanelState> = {};
-
-    for (const message of messages) {
-      if (!hasThinkingContent(message)) {
-        continue;
-      }
-
-      const key = getThinkingPanelKey(message);
-      const previous = thinkingPanelStates.value[key];
-      const shouldAutoExpand = Boolean(message.streaming);
-
-      if (shouldAutoExpand) {
-        nextStates[key] = {
-          autoOpened: true,
-          expanded: true,
-        };
-        continue;
-      }
-
-      if (previous?.autoOpened) {
-        nextStates[key] = {
-          autoOpened: false,
-          expanded: false,
-        };
-        continue;
-      }
-
-      if (previous) {
-        nextStates[key] = previous;
-      }
-    }
-
-    thinkingPanelStates.value = nextStates;
-
-    if (messages.length > 0 && autoFollowMessageScroll.value) {
-      scrollToBottom();
-    }
   },
   { immediate: true },
 );
@@ -2054,7 +1117,8 @@ const [RenameConversationModal, renameConversationModalApi] = useVbenModal({
   },
   onOpenChange(isOpen) {
     if (isOpen) {
-      const data = renameConversationModalApi.getData<AIChatConversationResult>();
+      const data =
+        renameConversationModalApi.getData<AIChatConversationResult>();
       renameConversationFormApi.resetForm();
       if (data) {
         renameConversationFormData.value = data;
@@ -2077,7 +1141,7 @@ const [RenameConversationModal, renameConversationModalApi] = useVbenModal({
 onMounted(async () => {
   await fetchProviders();
   await fetchMcps();
-  await fetchQuickPhrases();
+  await fetchQuickPhrasesFromToolbar();
   await initializeSession();
 
   hasInitialized = true;
@@ -2198,7 +1262,6 @@ onBeforeUnmount(() => {
       </div>
 
       <div
-        ref="messageContainerRef"
         class="flex-1 overflow-x-hidden overflow-y-auto bg-background/60 px-5 py-5 md:px-6 md:py-6"
         @scroll="handleMessageContainerScroll"
       >

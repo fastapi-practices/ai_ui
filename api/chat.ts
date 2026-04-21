@@ -11,14 +11,8 @@ import type {
 
 import type { Recordable } from '@vben/types';
 
-import type {
-  AIChatProtocolChunk,
-  AIChatProtocolName,
-} from '../protocols/types';
-import type {
-  AIChatMessageDetail,
-  AIMessageType,
-} from '../runtime/message-types';
+import type { AIChatProtocolName } from '../protocols/factory';
+import type { AIChatMessageDetail, AIMessageType } from '../types/message';
 
 import { useAppConfig } from '@vben/hooks';
 import { preferences } from '@vben/preferences';
@@ -78,7 +72,7 @@ export interface AIChatConversationResult {
   updated_time?: null | string;
 }
 
-export interface AIChatProtocolMessageMetadata {
+interface AIChatProtocolMessageMetadata {
   content?: unknown;
   conversationId?: null | string;
   createdTime?: null | string;
@@ -200,11 +194,6 @@ export interface AIChatMessageUpdateParams {
   content: string;
 }
 
-export interface AIChatStreamOptions {
-  onChunk: (chunk: AIChatProtocolChunk) => void;
-  signal?: AbortSignal;
-}
-
 export type AIChatTransportMode =
   | 'create'
   | 'regenerate-from-message'
@@ -248,7 +237,9 @@ function parseExtraBody(
   return undefined;
 }
 
-function toForwardedProps(params: AIChatComposerParams): AIChatForwardedPropsParams {
+function toForwardedProps(
+  params: AIChatComposerParams,
+): AIChatForwardedPropsParams {
   return {
     enableBuiltinTools: params.enable_builtin_tools ?? true,
     extraBody: parseExtraBody(params.extra_body),
@@ -331,47 +322,6 @@ export async function readAIChatErrorMessage(response: Response) {
     return payload?.error ?? payload?.msg ?? payload?.message ?? text;
   } catch {
     return text || `HTTP ${response.status}`;
-  }
-}
-
-async function postAIChatSSE(
-  request: AIChatTransportRequest,
-  options: AIChatStreamOptions,
-) {
-  const response = await fetch(
-    resolveAIChatApiUrl(resolveAIChatTransportUrl(request)),
-    {
-      body: JSON.stringify(request.body),
-      headers: getAIChatRequestHeaders(),
-      method: 'POST',
-      signal: options.signal,
-    },
-  );
-
-  if (!response.ok) {
-    throw new Error(await readAIChatErrorMessage(response));
-  }
-
-  const reader = response.body?.getReader();
-  if (!reader) {
-    throw new Error('AI stream is unavailable');
-  }
-
-  const decoder = new TextDecoder();
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      reader.releaseLock?.();
-      break;
-    }
-
-    const payload = decoder.decode(value, { stream: true });
-    if (payload) {
-      options.onChunk({
-        data: payload,
-      });
-    }
   }
 }
 
@@ -463,59 +413,5 @@ export async function updateAIChatMessageApi(
   return requestClient.put<AIActionResult>(
     `/api/v1/conversations/${conversationId}/messages/${messageId}`,
     data,
-  );
-}
-
-export async function streamAIChatTransport(
-  request: AIChatTransportRequest,
-  options: AIChatStreamOptions,
-) {
-  return postAIChatSSE(request, options);
-}
-
-export async function streamAIChatApi(
-  data: AIChatCompletionParams,
-  options: AIChatStreamOptions,
-) {
-  return streamAIChatTransport(
-    {
-      body: data,
-      mode: 'create',
-    },
-    options,
-  );
-}
-
-export async function regenerateAIChatFromMessageApi(
-  conversationId: string,
-  messageId: number,
-  data: AIChatRegenerateParams,
-  options: AIChatStreamOptions,
-) {
-  return streamAIChatTransport(
-    {
-      body: data,
-      conversationId,
-      messageId,
-      mode: 'regenerate-from-message',
-    },
-    options,
-  );
-}
-
-export async function regenerateAIChatFromResponseApi(
-  conversationId: string,
-  messageId: number,
-  data: AIChatRegenerateParams,
-  options: AIChatStreamOptions,
-) {
-  return streamAIChatTransport(
-    {
-      body: data,
-      conversationId,
-      messageId,
-      mode: 'regenerate-from-response',
-    },
-    options,
   );
 }

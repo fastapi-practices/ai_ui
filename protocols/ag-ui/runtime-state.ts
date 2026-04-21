@@ -1,25 +1,28 @@
-import type { AGUIStreamEvent } from './schema';
+import type {
+  AIChatProviderMessage,
+} from '../../runtime/message';
 
+import type { AGUIStreamEvent } from '#/plugins/ai/types/ag-ui';
 import type {
   AIChatMessage,
   AIChatMessageBlock,
-} from '#/plugins/ai/runtime/message-types';
+} from '#/plugins/ai/types/message';
 
 import { getRecordValue, resolveTimestamp } from './utils';
 
-export type AGUIStreamMessageState = {
+type AGUIStreamMessageState = {
   conversationId?: null | string;
   createdTime: string;
   role: AIChatMessage['role'];
 };
 
-export type AGUIThinkingState = {
+type AGUIThinkingState = {
   conversationId?: null | string;
   createdTime: string;
   messageId?: string;
 };
 
-export type AGUIToolCallState = {
+type AGUIToolCallState = {
   conversationId?: null | string;
   createdTime: string;
   parentMessageId?: string;
@@ -41,56 +44,26 @@ export function mapAGUIRole(role?: unknown): AIChatMessage['role'] {
   return role === 'user' ? 'user' : 'assistant';
 }
 
-export function resolveThreadId(event: AGUIStreamEvent) {
-  const value = getRecordValue(event, 'threadId');
+const resolveStringField = (key: string) => (event: AGUIStreamEvent) => {
+  const value = getRecordValue(event, key);
   return typeof value === 'string' ? value : undefined;
-}
+};
 
-export function resolveRunId(event: AGUIStreamEvent) {
-  const value = getRecordValue(event, 'runId');
-  return typeof value === 'string' ? value : undefined;
-}
+export const resolveThreadId = resolveStringField('threadId');
+export const resolveRunId = resolveStringField('runId');
+export const resolveMessageId = resolveStringField('messageId');
+export const resolveToolCallId = resolveStringField('toolCallId');
+export const resolveToolCallName = resolveStringField('toolCallName');
+export const resolveParentMessageId = resolveStringField('parentMessageId');
+export const resolveActivityType = resolveStringField('activityType');
+export const resolveStepName = resolveStringField('stepName');
+export const resolveReasoningEntityId = resolveStringField('entityId');
 
 export function resolveConversationId(
   event: AGUIStreamEvent,
   accumulator?: AGUIStreamAccumulator,
 ) {
   return resolveThreadId(event) ?? accumulator?.currentThreadId;
-}
-
-export function resolveMessageId(event: AGUIStreamEvent) {
-  const value = getRecordValue(event, 'messageId');
-  return typeof value === 'string' ? value : undefined;
-}
-
-export function resolveToolCallId(event: AGUIStreamEvent) {
-  const value = getRecordValue(event, 'toolCallId');
-  return typeof value === 'string' ? value : undefined;
-}
-
-export function resolveToolCallName(event: AGUIStreamEvent) {
-  const value = getRecordValue(event, 'toolCallName');
-  return typeof value === 'string' ? value : undefined;
-}
-
-export function resolveParentMessageId(event: AGUIStreamEvent) {
-  const value = getRecordValue(event, 'parentMessageId');
-  return typeof value === 'string' ? value : undefined;
-}
-
-export function resolveActivityType(event: AGUIStreamEvent) {
-  const value = getRecordValue(event, 'activityType');
-  return typeof value === 'string' ? value : undefined;
-}
-
-export function resolveStepName(event: AGUIStreamEvent) {
-  const value = getRecordValue(event, 'stepName');
-  return typeof value === 'string' ? value : undefined;
-}
-
-export function resolveReasoningEntityId(event: AGUIStreamEvent) {
-  const value = getRecordValue(event, 'entityId');
-  return typeof value === 'string' ? value : undefined;
 }
 
 export function getDeltaFromEvent(event: AGUIStreamEvent) {
@@ -192,8 +165,8 @@ export function createStreamMessage(
   createdTime: string,
   blocks: AIChatMessageBlock[],
   conversationId?: null | string,
-  overrides?: Partial<AIChatMessage>,
-): AIChatMessage {
+  overrides?: Partial<AIChatProviderMessage>,
+): AIChatProviderMessage {
   return {
     blocks,
     conversation_id: conversationId ?? null,

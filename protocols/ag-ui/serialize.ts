@@ -8,28 +8,28 @@ import type {
 } from '@ag-ui/core';
 
 import type {
+  AIChatCompletionParams,
+  BuildChatCompletionRequestInput,
+} from '#/plugins/ai/api/chat';
+import type {
   AGUIAssistantMessage,
   AGUIDeveloperMessage,
   AGUISystemMessage,
   AGUIToolCall,
   AGUIToolMessage,
   AGUIUserMessage,
-} from './schema';
-
-import type {
-  AIChatCompletionParams,
-  BuildChatCompletionRequestInput,
-} from '#/plugins/ai/api/chat';
+} from '#/plugins/ai/types/ag-ui';
 import type {
   AIChatFileMessageBlock,
   AIChatMessageBlock,
   AIChatMessageDetail,
-} from '#/plugins/ai/runtime/message-types';
+} from '#/plugins/ai/types/message';
 
+import {
+  AGUI_DEVELOPER_MESSAGE_EVENT_TYPE,
+  AGUI_SYSTEM_MESSAGE_EVENT_TYPE,
+} from './block-mappers';
 import { isRecord, parseDataUrl } from './utils';
-
-const AGUI_SYSTEM_MESSAGE_EVENT_TYPE = 'SYSTEM_MESSAGE';
-const AGUI_DEVELOPER_MESSAGE_EVENT_TYPE = 'DEVELOPER_MESSAGE';
 
 function toAGUIInputSource(
   block: AIChatFileMessageBlock,

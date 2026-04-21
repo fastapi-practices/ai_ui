@@ -1,4 +1,4 @@
-export type AIChatAttachmentSourceType = 'base64' | 'url';
+type AIChatAttachmentSourceType = 'base64' | 'url';
 export type AIChatAttachmentType = 'audio' | 'document' | 'image' | 'video';
 export type AIMessageBlockType = 'event' | 'file' | 'reasoning' | 'text';
 export type AIMessageType = 'error' | 'normal';
@@ -23,7 +23,7 @@ export interface AIChatFileMessageBlock {
   url?: null | string;
 }
 
-export type AIChatEventBlockStatus =
+type AIChatEventBlockStatus =
   | 'abort'
   | 'error'
   | 'info'

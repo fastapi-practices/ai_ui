@@ -6,7 +6,7 @@ import type { PaginationResult } from '#/types';
 
 import { requestClient } from '#/api/request';
 
-export interface AIProviderQueryParams {
+interface AIProviderQueryParams {
   cursor?: null | string;
   name?: null | string;
   status?: null | number;
@@ -98,7 +98,7 @@ export interface AIMcpResult extends AIMcpParams {
   updated_time?: null | string;
 }
 
-export interface AIQuickPhraseQueryParams {
+interface AIQuickPhraseQueryParams {
   content?: null | string;
   page?: number;
   size?: number;

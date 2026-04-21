@@ -16,14 +16,16 @@ import type {
 } from '@ag-ui/core';
 
 import type { AGUIStreamAccumulator } from './runtime-state';
-import type {
-  AGUIStreamEvent,
-} from './schema';
 
 import type {
-  AIChatMessage,
+  AIChatProviderMessage,
+} from '#/plugins/ai/runtime/message';
+import type {
+  AGUIStreamEvent,
+} from '#/plugins/ai/types/ag-ui';
+import type {
   AIChatMessageBlock,
-} from '#/plugins/ai/runtime/message-types';
+} from '#/plugins/ai/types/message';
 
 import {
   createAGUIBinaryFileBlock,
@@ -55,7 +57,7 @@ import { getEventText, resolveTimestamp } from './utils';
 type AGUIEventHandler = (
   event: AGUIStreamEvent,
   accumulator: AGUIStreamAccumulator,
-) => AIChatMessage | null;
+) => AIChatProviderMessage | null;
 
 function handleActivityDelta(event: AGUIStreamEvent, accumulator: AGUIStreamAccumulator) {
   const current = event as ActivityDeltaEvent;
@@ -650,7 +652,7 @@ const AGUI_EVENT_HANDLERS: Record<string, AGUIEventHandler> = {
 export function toAIChatMessageFromAGUIEvent(
   event: AGUIStreamEvent,
   accumulator: AGUIStreamAccumulator,
-): AIChatMessage | null {
+): AIChatProviderMessage | null {
   const handler = AGUI_EVENT_HANDLERS[event.type];
   return handler ? handler(event, accumulator) : null;
 }

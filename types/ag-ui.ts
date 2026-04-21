@@ -3,7 +3,6 @@ import type {
   AGUIEvent,
   AssistantMessage,
   DeveloperMessage,
-  EventType,
   Message,
   MessagesSnapshotEvent,
   ReasoningMessage,
@@ -13,9 +12,9 @@ import type {
   UserMessage,
 } from '@ag-ui/core';
 
-import type { AIMessageType } from '#/plugins/ai/runtime/message-types';
+import type { AIMessageType } from '#/plugins/ai/types/message';
 
-export interface AGUIMessageMetadata {
+interface AGUIMessageMetadata {
   content?: unknown;
   conversationId?: null | string;
   createdTime?: null | string;
@@ -31,28 +30,16 @@ export type AGUIToolCall = ToolCall;
 
 export type AGUIUserMessage = AGUIMessageMetadata & UserMessage;
 
-export type AGUIAssistantMessage = AGUIMessageMetadata &
-  AssistantMessage;
+export type AGUIAssistantMessage = AGUIMessageMetadata & AssistantMessage;
 
 export type AGUIReasoningMessage = AGUIMessageMetadata & ReasoningMessage;
 
-export type AGUIToolMessage = AGUIMessageMetadata &
-  ToolMessage;
+export type AGUIToolMessage = AGUIMessageMetadata & ToolMessage;
 
 export type AGUISystemMessage = AGUIMessageMetadata & SystemMessage;
 export type AGUIDeveloperMessage = AGUIMessageMetadata & DeveloperMessage;
 
-export type AGUIActivityMessage = ActivityMessage &
-  AGUIMessageMetadata;
-
-export type AGUIMessage =
-  | AGUIActivityMessage
-  | AGUIAssistantMessage
-  | AGUIDeveloperMessage
-  | AGUIReasoningMessage
-  | AGUISystemMessage
-  | AGUIToolMessage
-  | AGUIUserMessage;
+export type AGUIActivityMessage = ActivityMessage & AGUIMessageMetadata;
 
 export type AGUIConversationMessage = AGUIMessageMetadata & Message;
 
@@ -64,5 +51,4 @@ export type AGUIMessagesSnapshotEvent = Omit<
   rawEvent?: null | string;
 };
 
-export type AGUIStreamEventType = EventType;
 export type AGUIStreamEvent = AGUIEvent;

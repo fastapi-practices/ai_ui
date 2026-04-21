@@ -13,7 +13,7 @@ import type { ChatMessageItem } from '#/plugins/ai/runtime/message';
 import type {
   AIChatEventMessageBlock,
   AIChatFileMessageBlock,
-} from '#/plugins/ai/runtime/message-types';
+} from '#/plugins/ai/types/message';
 
 import { h } from 'vue';
 

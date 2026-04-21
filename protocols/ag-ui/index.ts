@@ -1,8 +1,7 @@
 import type { AIChatProviderMessage } from '../../runtime/message';
 import type { AIChatProtocolDriver } from '../factory';
-import type { AIChatProtocol, AIChatProtocolChunk } from '../types';
+import type { AIChatProtocol, AIChatProtocolChunk } from '../factory';
 import type { AGUIStreamAccumulator } from './runtime-state';
-import type { AGUIStreamEvent } from './schema';
 
 import type {
   AIChatCompletionParams,
@@ -10,12 +9,13 @@ import type {
   AIChatConversationDetailResult,
   BuildChatCompletionRequestInput,
 } from '#/plugins/ai/api/chat';
+import type { AGUIStreamEvent } from '#/plugins/ai/types/ag-ui';
 
 import {
   createProviderSeedMessage,
   providerMessageToChatMessage,
 } from '../../runtime/message';
-import { AG_UI_AI_CHAT_PROTOCOL_NAME } from '../types';
+import { AG_UI_AI_CHAT_PROTOCOL_NAME } from '../factory';
 import { normalizeAGUIConversationDetail } from './deserialize';
 import {
   buildAGUIEventPresentation,
@@ -179,9 +179,3 @@ export function createAGUIProtocolDriver(): AIChatProtocolDriver {
     },
   };
 }
-
-export {
-  buildAGUIEventPresentation,
-  shouldRenderAGUIEventTextAsCode,
-  shouldSuppressAGUIEventBlock,
-} from './event-presentation';

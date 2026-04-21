@@ -7,6 +7,10 @@ import type {
 } from '@ag-ui/core';
 
 import type {
+  AIChatConversationDetail,
+  AIChatConversationDetailResult,
+} from '#/plugins/ai/api/chat';
+import type {
   AGUIActivityMessage,
   AGUIAssistantMessage,
   AGUIConversationMessage,
@@ -14,29 +18,25 @@ import type {
   AGUIMessagesSnapshotEvent,
   AGUISystemMessage,
   AGUIUserMessage,
-} from './schema';
-
-import type {
-  AIChatConversationDetail,
-  AIChatConversationDetailResult,
-} from '#/plugins/ai/api/chat';
+} from '#/plugins/ai/types/ag-ui';
 import type {
   AIChatAttachmentType,
   AIChatMessageBlock,
   AIChatMessageDetail,
   AIMessageRoleType,
   AIMessageType,
-} from '#/plugins/ai/runtime/message-types';
+} from '#/plugins/ai/types/message';
 
 import {
   createAGUIBinaryFileBlock,
   createAGUIEventBlock,
   createAGUIInputSourceFileBlock,
 } from './block-mappers';
+import {
+  AGUI_DEVELOPER_MESSAGE_EVENT_TYPE,
+  AGUI_SYSTEM_MESSAGE_EVENT_TYPE,
+} from './block-mappers';
 import { isRecord } from './utils';
-
-const AGUI_SYSTEM_MESSAGE_EVENT_TYPE = 'SYSTEM_MESSAGE';
-const AGUI_DEVELOPER_MESSAGE_EVENT_TYPE = 'DEVELOPER_MESSAGE';
 
 function isAGUIMessagesSnapshotEvent(
   value: unknown,

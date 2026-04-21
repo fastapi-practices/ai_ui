@@ -1,7 +1,7 @@
 import type { SourcesProps } from '@antdv-next/x';
 
 import type { ChatMessageItem } from '#/plugins/ai/runtime/message';
-import type { AIChatEventMessageBlock } from '#/plugins/ai/runtime/message-types';
+import type { AIChatEventMessageBlock } from '#/plugins/ai/types/message';
 
 import {
   getMessageTextContent,
@@ -28,7 +28,7 @@ const REASONING_EVENT_TYPES = new Set([
   'THINKING_TEXT_MESSAGE_START',
 ]);
 
-export interface AGUIEventPresentationSection {
+interface AGUIEventPresentationSection {
   items?: NonNullable<SourcesProps['items']>;
   kind: 'raw-payload' | 'sources' | 'text';
   language?: string;
@@ -36,7 +36,7 @@ export interface AGUIEventPresentationSection {
   text?: string;
 }
 
-export interface AGUIEventPresentationResult {
+interface AGUIEventPresentationResult {
   description?: string;
   hasOnlySources: boolean;
   isSearchEvent: boolean;

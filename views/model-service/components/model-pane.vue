@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import type { PaginationResult } from '#/types';
 import type { VbenFormProps } from '#/adapter/form';
 import type {
   OnActionClickParams,
@@ -12,6 +11,7 @@ import type {
   AIProviderModelResult,
   AIProviderResult,
 } from '#/plugins/ai/api';
+import type { PaginationResult } from '#/types';
 
 import { computed, ref } from 'vue';
 

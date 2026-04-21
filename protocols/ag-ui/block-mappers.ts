@@ -4,13 +4,13 @@ import type {
   AIChatAttachmentType,
   AIChatEventMessageBlock,
   AIChatFileMessageBlock,
-} from '#/plugins/ai/runtime/message-types';
+} from '#/plugins/ai/types/message';
 
 import {
   normalizeAIChatEventBlock,
   normalizeAIChatFileBlock,
   uniqueAIChatEventTypes,
-} from '#/plugins/ai/runtime/message-block';
+} from '#/plugins/ai/runtime/message';
 
 function buildAGUIDataUrl(
   data?: null | string,
@@ -29,7 +29,10 @@ function buildAGUIDataUrl(
   return `data:${resolvedMimeType};base64,${data}`;
 }
 
-export function normalizeAGUIVisualEventType(type: string) {
+export const AGUI_SYSTEM_MESSAGE_EVENT_TYPE = 'SYSTEM_MESSAGE';
+export const AGUI_DEVELOPER_MESSAGE_EVENT_TYPE = 'DEVELOPER_MESSAGE';
+
+function normalizeAGUIVisualEventType(type: string) {
   switch (type) {
     case 'THINKING_END': {
       return 'REASONING_END';
@@ -52,7 +55,7 @@ export function normalizeAGUIVisualEventType(type: string) {
   }
 }
 
-export function getAGUIEventTypes(
+function getAGUIEventTypes(
   type: string,
   extras?: string[],
 ) {
