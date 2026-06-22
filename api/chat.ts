@@ -28,6 +28,7 @@ export type AIActionResult = null | string;
 
 export interface AIChatForwardedPropsParams {
   enableBuiltinTools?: boolean;
+  text2SqlDatasetId?: null | number;
   extraBody?: null | Recordable<unknown>;
   extraHeaders?: null | Recordable<string>;
   frequencyPenalty?: null | number;
@@ -205,6 +206,7 @@ export interface AIChatComposerParams {
   extra_body?: null | string;
   thinking?: AIChatThinkingType | boolean | null;
   enable_builtin_tools?: boolean;
+  text2sql_dataset_id?: null | number;
   mcp_ids?: null | number[];
   web_search?: AIWebSearchType;
 }
@@ -295,6 +297,7 @@ function toForwardedProps(
 ): AIChatForwardedPropsParams {
   return {
     enableBuiltinTools: params.enable_builtin_tools ?? true,
+    text2SqlDatasetId: params.text2sql_dataset_id ?? null,
     extraBody: parseExtraBody(params.extra_body),
     extraHeaders: params.extra_headers ?? undefined,
     frequencyPenalty: params.frequency_penalty,

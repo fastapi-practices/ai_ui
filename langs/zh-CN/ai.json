@@ -4,5 +4,6 @@
   "provider": "供应商管理",
   "model": "供应商与模型",
   "mcp": "MCP 管理",
-  "quick_phrase": "快捷短语"
+  "quick_phrase": "快捷短语",
+  "text2sql": "数据集"
 }

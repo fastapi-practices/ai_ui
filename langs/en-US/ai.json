@@ -4,5 +4,6 @@
   "provider": "Provider",
   "model": "Providers & Models",
   "mcp": "MCP",
-  "quick_phrase": "Quick Phrase"
+  "quick_phrase": "Quick Phrase",
+  "text2sql": "Dataset"
 }

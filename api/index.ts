@@ -256,4 +256,228 @@ export async function deleteAIQuickPhraseApi(pk: number) {
   return requestClient.delete<AIActionResult>(`/api/v1/quick-phrases/${pk}`);
 }
 
+// ---------------- Text2SQL ----------------
+
+// 数据集
+export interface AIText2SqlDatasetParams {
+  description?: null | string;
+  enabled?: number;
+  name: string;
+  sort?: number;
+}
+
+export type AIText2SqlDatasetUpdateParams = Partial<AIText2SqlDatasetParams>;
+
+export interface AIText2SqlDatasetResult extends AIText2SqlDatasetParams {
+  created_time: string;
+  id: number;
+  updated_time?: null | string;
+}
+
+export interface Text2SqlDatasetEnabled {
+  description?: null | string;
+  id: number;
+  name: string;
+}
+
+export interface Text2SqlTableSelectable {
+  table_comment?: null | string;
+  table_name: string;
+  selected: boolean;
+}
+
+export interface AIText2SqlTableParams {
+  dataset_id: number;
+  custom_desc?: null | string;
+  enabled?: number;
+  schema_name?: string;
+  sort?: number;
+  table_comment?: null | string;
+  table_name: string;
+}
+
+export type AIText2SqlTableUpdateParams = Partial<AIText2SqlTableParams>;
+
+export interface AIText2SqlTableResult extends AIText2SqlTableParams {
+  created_time: string;
+  id: number;
+  updated_time?: null | string;
+}
+
+export interface AIText2SqlExampleParams {
+  dataset_id: number;
+  enabled?: number;
+  note?: null | string;
+  question: string;
+  related_tables?: null | string;
+  sql: string;
+  sort?: number;
+}
+
+export type AIText2SqlExampleUpdateParams = Partial<AIText2SqlExampleParams>;
+
+export interface AIText2SqlExampleResult extends AIText2SqlExampleParams {
+  created_time: string;
+  id: number;
+  updated_time?: null | string;
+}
+
+export interface Text2SqlQueryParams {
+  question: string;
+}
+
+export interface Text2SqlQueryResult {
+  columns: string[];
+  duration_ms: number;
+  history_id?: null | number;
+  row_count: number;
+  rows: Recordable<unknown>[];
+  sql: string;
+  summary: string;
+}
+
+// 数据集
+export async function getEnabledDatasetsApi() {
+  return requestClient.get<Text2SqlDatasetEnabled[]>(
+    '/api/v1/text2sql/datasets/enabled',
+  );
+}
+
+export async function getDatasetListApi(params?: Recordable<unknown>) {
+  return requestClient.get<PaginationResult<AIText2SqlDatasetResult>>(
+    '/api/v1/text2sql/datasets',
+    { params },
+  );
+}
+
+export async function getAllDatasetsApi() {
+  return requestClient.get<AIText2SqlDatasetResult[]>(
+    '/api/v1/text2sql/datasets/all',
+  );
+}
+
+export async function getDatasetApi(pk: number) {
+  return requestClient.get<AIText2SqlDatasetResult>(
+    `/api/v1/text2sql/datasets/${pk}`,
+  );
+}
+
+export async function createDatasetApi(data: AIText2SqlDatasetParams) {
+  return requestClient.post<AIActionResult>('/api/v1/text2sql/datasets', data);
+}
+
+export async function updateDatasetApi(
+  pk: number,
+  data: AIText2SqlDatasetUpdateParams,
+) {
+  return requestClient.put<AIActionResult>(
+    `/api/v1/text2sql/datasets/${pk}`,
+    data,
+  );
+}
+
+export async function deleteDatasetApi(pk: number) {
+  return requestClient.delete<AIActionResult>(`/api/v1/text2sql/datasets/${pk}`);
+}
+
+export async function getSelectableTablesApi(
+  datasetId: number,
+  tableSchema?: string,
+) {
+  return requestClient.get<Text2SqlTableSelectable[]>(
+    '/api/v1/text2sql/tables',
+    { params: { dataset_id: datasetId, table_schema: tableSchema } },
+  );
+}
+
+export async function getTableColumnsApi(
+  tableName: string,
+  tableSchema?: string,
+) {
+  return requestClient.get<Recordable<unknown>[]>(
+    `/api/v1/text2sql/tables/${tableName}/columns`,
+    { params: { table_schema: tableSchema } },
+  );
+}
+
+export async function getSelectedTableListApi(params?: Recordable<unknown>) {
+  return requestClient.get<PaginationResult<AIText2SqlTableResult>>(
+    '/api/v1/text2sql/selected-tables',
+    { params },
+  );
+}
+
+export async function getAllSelectedTablesApi() {
+  return requestClient.get<AIText2SqlTableResult[]>(
+    '/api/v1/text2sql/selected-tables/all',
+  );
+}
+
+export async function getSelectedTableApi(pk: number) {
+  return requestClient.get<AIText2SqlTableResult>(
+    `/api/v1/text2sql/selected-tables/${pk}`,
+  );
+}
+
+export async function createSelectedTableApi(data: AIText2SqlTableParams) {
+  return requestClient.post<AIActionResult>(
+    '/api/v1/text2sql/selected-tables',
+    data,
+  );
+}
+
+export async function updateSelectedTableApi(
+  pk: number,
+  data: AIText2SqlTableUpdateParams,
+) {
+  return requestClient.put<AIActionResult>(
+    `/api/v1/text2sql/selected-tables/${pk}`,
+    data,
+  );
+}
+
+export async function deleteSelectedTableApi(pk: number) {
+  return requestClient.delete<AIActionResult>(
+    `/api/v1/text2sql/selected-tables/${pk}`,
+  );
+}
+
+export async function getExampleListApi(params?: Recordable<unknown>) {
+  return requestClient.get<PaginationResult<AIText2SqlExampleResult>>(
+    '/api/v1/text2sql/examples',
+    { params },
+  );
+}
+
+export async function getAllExamplesApi() {
+  return requestClient.get<AIText2SqlExampleResult[]>(
+    '/api/v1/text2sql/examples/all',
+  );
+}
+
+export async function createExampleApi(data: AIText2SqlExampleParams) {
+  return requestClient.post<AIActionResult>('/api/v1/text2sql/examples', data);
+}
+
+export async function updateExampleApi(
+  pk: number,
+  data: AIText2SqlExampleUpdateParams,
+) {
+  return requestClient.put<AIActionResult>(
+    `/api/v1/text2sql/examples/${pk}`,
+    data,
+  );
+}
+
+export async function deleteExampleApi(pk: number) {
+  return requestClient.delete<AIActionResult>(`/api/v1/text2sql/examples/${pk}`);
+}
+
+export async function queryText2SqlApi(data: Text2SqlQueryParams) {
+  return requestClient.post<Text2SqlQueryResult>(
+    '/api/v1/text2sql/queries',
+    data,
+  );
+}
+
 export * from './chat';

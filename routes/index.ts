@@ -48,6 +48,15 @@ const routes: RouteRecordRaw[] = [
       icon: 'mdi:lightning-bolt-outline',
     },
   },
+  {
+    name: 'PluginAIText2Sql',
+    path: '/plugins/ai/text2sql',
+    component: () => import('#/plugins/ai/views/text2sql/index.vue'),
+    meta: {
+      title: $t('ai.text2sql'),
+      icon: 'mdi:database-search-outline',
+    },
+  },
 ];
 
 export default routes;
