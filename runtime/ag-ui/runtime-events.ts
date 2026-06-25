@@ -15,11 +15,10 @@ import type {
   ToolCallStartEvent,
 } from '@ag-ui/core';
 
+import type { AGUIStreamEvent } from '../../types/ag-ui';
+import type { AIChatMessageBlock } from '../../types/message';
+import type { AIChatProviderMessage } from '../message';
 import type { AGUIStreamAccumulator } from './runtime-state';
-
-import type { AIChatProviderMessage } from '#/plugins/ai/runtime/message';
-import type { AGUIStreamEvent } from '#/plugins/ai/types/ag-ui';
-import type { AIChatMessageBlock } from '#/plugins/ai/types/message';
 
 import {
   createAGUIBinaryFileBlock,
@@ -723,18 +722,15 @@ function handleToolCallResult(
   const blocks: AIChatMessageBlock[] = [];
   const content = current.content.trim();
   const toolResultBlocks = normalizeAGUIToolResultBlocks(content);
-  const hasExtractedFiles = toolResultBlocks.length > 0;
-  if (content && toolResultBlocks.length === 0) {
-    blocks.push({ text: content, type: 'text' });
-  }
   blocks.push(...toolResultBlocks);
   blocks.unshift(
     createAGUIEventBlock({
-      data: hasExtractedFiles
+      data: content
         ? {
             ...current,
             content: undefined,
             contentOmitted: true,
+            contentPreview: content.slice(0, 2000),
             extractedFileCount: toolResultBlocks.length,
           }
         : current,

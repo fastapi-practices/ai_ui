@@ -1,6 +1,7 @@
+import type { AIMcpParams, AIMcpResult } from '../../api';
+
 import type { VbenFormSchema } from '#/adapter/form';
 import type { OnActionClickFn, VxeGridProps } from '#/adapter/vxe-table';
-import type { AIMcpParams, AIMcpResult } from '#/plugins/ai/api';
 
 import { $t } from '@vben/locales';
 
@@ -186,6 +187,7 @@ export const mcpSchema: VbenFormSchema[] = [
     fieldName: 'url',
     label: '端点链接',
     dependencies: {
+      rules: (values) => (values?.type === 0 ? null : 'required'),
       show: (values) => values?.type !== 0,
       triggerFields: ['type'],
     },
@@ -194,7 +196,11 @@ export const mcpSchema: VbenFormSchema[] = [
     component: 'Input',
     fieldName: 'command',
     label: '启动命令',
-    rules: 'required',
+    dependencies: {
+      rules: (values) => (values?.type === 0 ? 'required' : null),
+      show: (values) => values?.type === 0,
+      triggerFields: ['type'],
+    },
   },
   {
     component: 'Textarea',
@@ -532,7 +538,7 @@ export function parseMcpImportJson(value: string): AIMcpParams {
 
   return {
     args,
-    command: command ?? '',
+    command: type === 0 ? (command ?? '') : undefined,
     description,
     env,
     headers,

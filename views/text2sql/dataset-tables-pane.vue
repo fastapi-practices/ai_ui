@@ -4,7 +4,7 @@ import type { OnActionClickParams, VxeTableGridOptions } from '#/adapter/vxe-tab
 import type {
   AIText2SqlTableParams,
   AIText2SqlTableResult,
-} from '#/plugins/ai/api';
+} from '../../api';
 
 import { ref, watch } from 'vue';
 
@@ -21,7 +21,7 @@ import {
   getSelectableTablesApi,
   getSelectedTableListApi,
   updateSelectedTableApi,
-} from '#/plugins/ai/api';
+} from '../../api';
 
 import { selectedTableSchema, useSelectedTableColumns } from './data';
 

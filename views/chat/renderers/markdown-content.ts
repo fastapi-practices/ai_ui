@@ -7,7 +7,7 @@ import type {
   VNodeArrayChildren,
 } from 'vue';
 
-import type { ChatMessageItem } from '#/plugins/ai/runtime/message';
+import type { ChatMessageItem } from '../../../runtime/message';
 
 import { defineComponent, h } from 'vue';
 
@@ -20,7 +20,6 @@ import '@antdv-next/x-markdown/themes/index.css';
 import '@antdv-next/x-markdown/themes/light.css';
 import '@antdv-next/x-markdown/themes/dark.css';
 
-const MARKDOWN_STREAM_FALLBACK_COMPONENT = 'incomplete-markdown-fragment';
 const MARKDOWN_INCOMPLETE_IMAGE_COMPONENT = 'incomplete-image';
 const MARKDOWN_INCOMPLETE_LINK_COMPONENT = 'incomplete-link';
 const MARKDOWN_INCOMPLETE_TABLE_COMPONENT = 'incomplete-table';
@@ -264,6 +263,9 @@ export function renderCodeBlock(
     h(CodeHighlighter, {
       content,
       language,
+      showCopyButton: true,
+      showLanguage: true,
+      showLineNumbers: content.split('\n').length > 6,
       showThemeToggle: false,
       theme: isDark ? 'dark' : 'light',
     }),
@@ -382,29 +384,31 @@ function buildMarkdownContentRenderer(isDark = false) {
     );
   };
 
-  const IncompleteMarkdownFragment: FunctionalComponent = (_, { attrs }) => {
-    const content = decodeIncompleteMarkdownRaw(attrs['data-raw']);
-    if (!content) {
-      return null;
-    }
-
-    return h(
-      'span',
-      {
-        class: 'whitespace-pre-wrap break-words text-foreground/80',
-      },
-      content,
-    );
+  const MarkdownStreamTail: FunctionalComponent = () => {
+    return h('span', {
+      'aria-hidden': 'true',
+      class:
+        'ml-0.5 inline-block h-4 w-1 translate-y-0.5 animate-pulse rounded-full bg-primary align-baseline',
+    });
   };
 
   const IncompleteImage: FunctionalComponent = () => {
-    return h(Skeleton.Image, {
-      active: true,
-      style: {
-        height: '60px',
-        width: '60px',
+    return h(
+      'span',
+      {
+        class:
+          'my-2 inline-flex items-center rounded-xl border border-border/70 bg-muted/30 p-2',
       },
-    });
+      [
+        h(Skeleton.Image, {
+          active: true,
+          style: {
+            height: '60px',
+            width: '60px',
+          },
+        }),
+      ],
+    );
   };
 
   const IncompleteLink: FunctionalComponent = (_, { attrs }) => {
@@ -424,22 +428,27 @@ function buildMarkdownContentRenderer(isDark = false) {
   };
 
   const IncompleteTable: FunctionalComponent = () => {
-    return h(Skeleton.Node, {
-      active: true,
-      style: {
-        width: '160px',
-      },
-    });
+    return h('div', { class: 'my-3 max-w-full overflow-hidden rounded-xl' }, [
+      h(Skeleton.Node, {
+        active: true,
+        style: {
+          height: '96px',
+          width: 'min(360px, 100%)',
+        },
+      }),
+    ]);
   };
 
   const IncompleteHtml: FunctionalComponent = () => {
-    return h(Skeleton.Node, {
-      active: true,
-      style: {
-        height: '120px',
-        width: 'min(383px, 100%)',
-      },
-    });
+    return h('div', { class: 'my-3 max-w-full overflow-hidden rounded-xl' }, [
+      h(Skeleton.Node, {
+        active: true,
+        style: {
+          height: '120px',
+          width: 'min(383px, 100%)',
+        },
+      }),
+    ]);
   };
 
   const IncompleteEmphasis: FunctionalComponent = (_, { attrs }) => {
@@ -576,7 +585,7 @@ function buildMarkdownContentRenderer(isDark = false) {
       'div',
       {
         class:
-          'my-3 max-w-full overflow-x-auto rounded-xl border border-border/70',
+          'my-3 max-w-full overflow-x-auto rounded-xl border border-border/70 bg-background/60',
       },
       [
         h(
@@ -585,6 +594,46 @@ function buildMarkdownContentRenderer(isDark = false) {
           slots.default?.() as undefined | VNodeArrayChildren,
         ),
       ],
+    );
+  };
+
+  const MarkdownTableHead: FunctionalComponent = (_, { slots }) => {
+    return h(
+      'thead',
+      { class: 'bg-muted/60 text-foreground' },
+      slots.default?.() as undefined | VNodeArrayChildren,
+    );
+  };
+
+  const MarkdownTableCell: FunctionalComponent = (_, { attrs, slots }) => {
+    return h(
+      'td',
+      {
+        ...attrs,
+        class: ['border-t border-border/70 px-3 py-2 align-top', attrs.class]
+          .filter(Boolean)
+          .join(' '),
+      },
+      slots.default?.() as undefined | VNodeArrayChildren,
+    );
+  };
+
+  const MarkdownTableHeaderCell: FunctionalComponent = (
+    _,
+    { attrs, slots },
+  ) => {
+    return h(
+      'th',
+      {
+        ...attrs,
+        class: [
+          'border-b border-border/70 px-3 py-2 text-left font-semibold',
+          attrs.class,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      },
+      slots.default?.() as undefined | VNodeArrayChildren,
     );
   };
 
@@ -600,7 +649,6 @@ function buildMarkdownContentRenderer(isDark = false) {
   };
 
   const baseMarkdownComponents: Record<string, Component> = {
-    [MARKDOWN_STREAM_FALLBACK_COMPONENT]: IncompleteMarkdownFragment,
     [MARKDOWN_INCOMPLETE_IMAGE_COMPONENT]: IncompleteImage,
     [MARKDOWN_INCOMPLETE_LINK_COMPONENT]: IncompleteLink,
     [MARKDOWN_INCOMPLETE_TABLE_COMPONENT]: IncompleteTable,
@@ -614,6 +662,9 @@ function buildMarkdownContentRenderer(isDark = false) {
     pre: MarkdownPre,
     sup: MarkdownSupFallback,
     table: MarkdownTable,
+    td: MarkdownTableCell,
+    th: MarkdownTableHeaderCell,
+    thead: MarkdownTableHead,
   };
 
   return defineComponent({
@@ -659,12 +710,13 @@ function buildMarkdownContentRenderer(isDark = false) {
           escapeRawHtml: false,
           openLinksInNewTab: true,
           paragraphTag: 'div',
+          protectCustomTagNewlines: true,
           ...(streaming
             ? {
                 streaming: {
                   animationConfig: {
-                    easing: 'linear',
-                    fadeDuration: 80,
+                    easing: 'ease-in-out',
+                    fadeDuration: 140,
                   },
                   enableAnimation: true,
                   hasNextChunk,
@@ -674,10 +726,11 @@ function buildMarkdownContentRenderer(isDark = false) {
                     image: MARKDOWN_INCOMPLETE_IMAGE_COMPONENT,
                     'inline-code': MARKDOWN_INCOMPLETE_INLINE_CODE_COMPONENT,
                     link: MARKDOWN_INCOMPLETE_LINK_COMPONENT,
-                    list: MARKDOWN_STREAM_FALLBACK_COMPONENT,
                     table: MARKDOWN_INCOMPLETE_TABLE_COMPONENT,
                   },
-                  ...(hasNextChunk ? { tail: { content: '▋' } } : {}),
+                  ...(hasNextChunk
+                    ? { tail: { component: MarkdownStreamTail } }
+                    : {}),
                 },
               }
             : {}),

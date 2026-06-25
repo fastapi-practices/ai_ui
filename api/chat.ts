@@ -11,7 +11,6 @@ import type {
 
 import type { Recordable } from '@vben/types';
 
-import type { AIChatProtocolName } from '../protocols/factory';
 import type { AIChatMessageDetail, AIMessageType } from '../types/message';
 
 import { useAppConfig } from '@vben/hooks';
@@ -19,10 +18,8 @@ import { preferences } from '@vben/preferences';
 import { useAccessStore } from '@vben/stores';
 
 import { requestClient } from '#/api/request';
-import {
-  buildAIChatCompletionRequest,
-  normalizeAIChatConversationDetail,
-} from '#/plugins/ai/protocols';
+
+import { normalizeAGUIConversationDetail } from '../runtime/ag-ui/deserialize';
 
 export type AIActionResult = null | string;
 
@@ -191,7 +188,6 @@ export interface AIChatComposerParams {
   image_size?: AIChatImageSizeType | null;
   provider_id: number;
   model_id: string;
-  user_prompt?: null | string;
   max_tokens?: null | number;
   temperature?: null | number;
   top_p?: null | number;
@@ -263,13 +259,8 @@ export interface AIChatTransportRequest {
 
 export interface BuildChatCompletionRequestInput {
   conversationId?: null | string;
-  history: AIChatMessageDetail[];
   params: AIChatComposerParams;
   promptText?: string;
-}
-
-export interface AIChatProtocolOptions {
-  protocolName?: AIChatProtocolName;
 }
 
 function parseExtraBody(
@@ -332,13 +323,22 @@ function toForwardedProps(
 
 export function buildChatCompletionRequest(
   input: BuildChatCompletionRequestInput,
-  options: AIChatProtocolOptions = {},
 ): AIChatCompletionParams {
-  return buildAIChatCompletionRequest(
-    input,
-    toForwardedProps(input.params),
-    options.protocolName,
-  );
+  const promptText = input.promptText?.trim();
+
+  return {
+    conversationId: input.conversationId ?? undefined,
+    forwardedProps: toForwardedProps(input.params),
+    messages: promptText
+      ? [
+          {
+            content: promptText,
+            id: `user-draft-${Date.now()}`,
+            role: 'user',
+          },
+        ]
+      : [],
+  };
 }
 
 const { apiURL } = useAppConfig(import.meta.env, import.meta.env.PROD);
@@ -381,12 +381,44 @@ export function getAIChatRequestHeaders() {
   };
 }
 
+function formatAIChatValidationDetail(detail: unknown) {
+  if (typeof detail === 'string') {
+    return detail;
+  }
+
+  if (!Array.isArray(detail)) {
+    return '';
+  }
+
+  return detail
+    .map((item) => {
+      if (!item || typeof item !== 'object') {
+        return '';
+      }
+
+      const record = item as Recordable<unknown>;
+      const loc = Array.isArray(record.loc) ? record.loc.join('.') : '';
+      const msg = typeof record.msg === 'string' ? record.msg : '';
+      return [loc, msg].filter(Boolean).join(': ');
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
 export async function readAIChatErrorMessage(response: Response) {
   const text = await response.text();
 
   try {
     const payload = JSON.parse(text);
-    return payload?.error ?? payload?.msg ?? payload?.message ?? text;
+    const validationMessage = formatAIChatValidationDetail(payload?.detail);
+    return (
+      payload?.error ||
+      payload?.msg ||
+      payload?.message ||
+      validationMessage ||
+      text ||
+      `HTTP ${response.status}`
+    );
   } catch {
     return text || `HTTP ${response.status}`;
   }
@@ -412,13 +444,12 @@ export async function getRecentAIChatConversationsApi(
 
 export async function getAIChatConversationDetailApi(
   conversationId: string,
-  options: AIChatProtocolOptions = {},
 ): Promise<AIChatConversationDetail> {
   const data = await requestClient.get<AIChatConversationDetailResult>(
     `/api/v1/conversations/${conversationId}`,
   );
 
-  return normalizeAIChatConversationDetail(data, options.protocolName);
+  return normalizeAGUIConversationDetail(data);
 }
 
 export async function updateAIChatConversationApi(

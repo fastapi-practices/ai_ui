@@ -4,7 +4,7 @@ import type { OnActionClickParams, VxeTableGridOptions } from '#/adapter/vxe-tab
 import type {
   AIText2SqlExampleParams,
   AIText2SqlExampleResult,
-} from '#/plugins/ai/api';
+} from '../../api';
 
 import { computed, ref, watch } from 'vue';
 
@@ -20,7 +20,7 @@ import {
   deleteExampleApi,
   getExampleListApi,
   updateExampleApi,
-} from '#/plugins/ai/api';
+} from '../../api';
 
 import { exampleSchema, useExampleColumns } from './data';
 

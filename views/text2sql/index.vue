@@ -2,7 +2,7 @@
 import type {
   AIText2SqlDatasetParams,
   AIText2SqlDatasetResult,
-} from '#/plugins/ai/api';
+} from '../../api';
 
 import { computed, onMounted, ref } from 'vue';
 
@@ -17,7 +17,7 @@ import {
   deleteDatasetApi,
   getDatasetListApi,
   updateDatasetApi,
-} from '#/plugins/ai/api';
+} from '../../api';
 
 import { datasetSchema } from './data';
 import DatasetExamplesPane from './dataset-examples-pane.vue';

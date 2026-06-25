@@ -4,7 +4,7 @@ import type {
   AIText2SqlDatasetResult,
   AIText2SqlExampleResult,
   AIText2SqlTableResult,
-} from '#/plugins/ai/api';
+} from '../../api';
 
 import { $t } from '@vben/locales';
 
