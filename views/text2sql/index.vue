@@ -8,6 +8,7 @@ import { computed, onMounted, ref } from 'vue';
 
 import { Page, confirm, useVbenModal } from '@vben/common-ui';
 import { IconifyIcon } from '@vben/icons';
+import { $t } from '@vben/locales';
 
 import { message } from 'antdv-next';
 
@@ -50,7 +51,9 @@ const [DatasetForm, datasetFormApi] = useVbenForm({
 
 const datasetFormData = ref<AIText2SqlDatasetResult>();
 const datasetModalTitle = computed(() =>
-  datasetFormData.value?.id ? '编辑数据集' : '新增数据集',
+  datasetFormData.value?.id
+    ? $t('ai.text2sqlPage.dataset.editTitle')
+    : $t('ai.text2sqlPage.dataset.createTitle'),
 );
 
 const [DatasetModal, datasetModalApi] = useVbenModal({
@@ -69,7 +72,7 @@ const [DatasetModal, datasetModalApi] = useVbenModal({
       } else {
         await createDatasetApi(data);
       }
-      message.success('已保存');
+      message.success($t('ai.text2sqlPage.dataset.saved'));
       await datasetModalApi.close();
       await loadDatasets();
     } catch (error) {
@@ -102,11 +105,11 @@ function openEditDataset(row: AIText2SqlDatasetResult) {
 
 function confirmDeleteDataset(row: AIText2SqlDatasetResult) {
   confirm({
-    content: `确认删除数据集「${row.name}」吗？其下表与样例保留但不再被该数据集聚合。`,
+    content: $t('ai.text2sqlPage.dataset.deleteConfirm', { name: row.name }),
     icon: 'warning',
   }).then(async () => {
     await deleteDatasetApi(row.id);
-    message.success('已删除');
+    message.success($t('ai.text2sqlPage.dataset.deleted'));
     await loadDatasets();
   });
 }
@@ -123,13 +126,13 @@ onMounted(loadDatasets);
         <div
           class="flex items-center justify-between border-b border-border px-3 py-2.5"
         >
-          <span class="text-sm font-semibold">数据集</span>
+          <span class="text-sm font-semibold">{{ $t('ai.text2sqlPage.dataset.title') }}</span>
           <a-button size="small" type="primary" @click="openCreateDataset">
-            新增
+            {{ $t('ai.text2sqlPage.dataset.add') }}
           </a-button>
         </div>
         <div class="flex-1 overflow-y-auto p-2">
-          <a-empty v-if="datasets.length === 0" description="暂无数据集" />
+          <a-empty v-if="datasets.length === 0" :description="$t('ai.text2sqlPage.dataset.empty')" />
           <div
             v-for="d in datasets"
             :key="d.id"
@@ -146,7 +149,7 @@ onMounted(loadDatasets);
                 <div class="flex items-center gap-1.5">
                   <span class="truncate text-sm font-medium">{{ d.name }}</span>
                   <a-tag v-if="!d.enabled" color="default" class="!m-0 !text-xs">
-                    停用
+                    {{ $t('ai.text2sqlPage.dataset.disabled') }}
                   </a-tag>
                 </div>
                 <div
@@ -186,14 +189,14 @@ onMounted(loadDatasets);
       >
         <div class="border-b border-border px-4 pt-3">
           <span class="text-sm font-semibold">
-            {{ selectedDataset ? selectedDataset.name : '请选择数据集' }}
+            {{ selectedDataset ? selectedDataset.name : $t('ai.text2sqlPage.dataset.pleaseSelect') }}
           </span>
         </div>
         <a-tabs v-model:activeKey="activeTab" class="flex-1 !px-3">
-          <a-tab-pane key="tables" tab="表" class="!pt-2">
+          <a-tab-pane key="tables" :tab="$t('ai.text2sqlPage.table.tab')" class="!pt-2">
             <DatasetTablesPane :dataset-id="selectedDatasetId" />
           </a-tab-pane>
-          <a-tab-pane key="examples" tab="样例" class="!pt-2">
+          <a-tab-pane key="examples" :tab="$t('ai.text2sqlPage.example.tab')" class="!pt-2">
             <DatasetExamplesPane :dataset-id="selectedDatasetId" />
           </a-tab-pane>
         </a-tabs>

@@ -10,6 +10,7 @@ import { computed, ref, watch } from 'vue';
 
 import { VbenButton, useVbenModal } from '@vben/common-ui';
 import { MaterialSymbolsAdd } from '@vben/icons';
+import { $t } from '@vben/locales';
 
 import { message } from 'antdv-next';
 
@@ -29,20 +30,20 @@ const props = defineProps<{ datasetId?: number }>();
 const formOptions: VbenFormProps = {
   collapsed: true,
   showCollapseButton: true,
-  submitButtonOptions: { content: '查询' },
+  submitButtonOptions: { content: $t('common.query') },
   schema: [
-    { component: 'Input', fieldName: 'question', label: '问题' },
+    { component: 'Input', fieldName: 'question', label: $t('ai.text2sqlPage.example.question') },
     {
       component: 'Select',
       componentProps: {
         allowClear: true,
         options: [
-          { label: '启用', value: 1 },
-          { label: '停用', value: 0 },
+          { label: $t('ai.text2sqlPage.example.enabled'), value: 1 },
+          { label: $t('ai.text2sqlPage.example.disabledOption'), value: 0 },
         ],
       },
       fieldName: 'enabled',
-      label: '状态',
+      label: $t('ai.text2sqlPage.example.status'),
     },
   ],
 };
@@ -92,7 +93,7 @@ function onActionClick({ code, row }: OnActionClickParams<AIText2SqlExampleResul
   switch (code) {
     case 'delete': {
       deleteExampleApi(row.id).then(() => {
-        message.success({ content: '已删除', key: 'action_process_msg' });
+        message.success({ content: $t('ai.text2sqlPage.example.deleted'), key: 'action_process_msg' });
         onRefresh();
       });
       break;
@@ -111,7 +112,11 @@ const [Form, formApi] = useVbenForm({
 });
 
 const formData = ref<AIText2SqlExampleResult>();
-const modalTitle = computed(() => (formData.value?.id ? '编辑样例' : '新增样例'));
+const modalTitle = computed(() =>
+  formData.value?.id
+    ? $t('ai.text2sqlPage.example.editTitle')
+    : $t('ai.text2sqlPage.example.createTitle'),
+);
 
 const [Modal, modalApi] = useVbenModal({
   destroyOnClose: true,
@@ -121,7 +126,7 @@ const [Modal, modalApi] = useVbenModal({
       return;
     }
     if (!props.datasetId) {
-      message.warning('请先选择数据集');
+      message.warning($t('ai.text2sqlPage.example.pleaseSelectDataset'));
       return;
     }
     modalApi.lock();
@@ -134,7 +139,7 @@ const [Modal, modalApi] = useVbenModal({
       } else {
         await createExampleApi(payload);
       }
-      message.success('已保存');
+      message.success($t('ai.text2sqlPage.example.saved'));
       await modalApi.close();
       onRefresh();
     } catch (error) {
@@ -166,7 +171,7 @@ const [Modal, modalApi] = useVbenModal({
         @click="() => modalApi.setData(null).open()"
       >
         <MaterialSymbolsAdd class="size-5" />
-        新增样例
+        {{ $t('ai.text2sqlPage.example.add') }}
       </VbenButton>
     </template>
   </Grid>

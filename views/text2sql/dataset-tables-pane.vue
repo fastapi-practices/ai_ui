@@ -10,6 +10,7 @@ import { ref, watch } from 'vue';
 
 import { VbenButton, useVbenModal } from '@vben/common-ui';
 import { MaterialSymbolsAdd } from '@vben/icons';
+import { $t } from '@vben/locales';
 
 import { message } from 'antdv-next';
 
@@ -30,20 +31,20 @@ const props = defineProps<{ datasetId?: number }>();
 const formOptions: VbenFormProps = {
   collapsed: true,
   showCollapseButton: true,
-  submitButtonOptions: { content: '查询' },
+  submitButtonOptions: { content: $t('common.query') },
   schema: [
-    { component: 'Input', fieldName: 'table_name', label: '表名' },
+    { component: 'Input', fieldName: 'table_name', label: $t('ai.text2sqlPage.table.name') },
     {
       component: 'Select',
       componentProps: {
         allowClear: true,
         options: [
-          { label: '启用', value: 1 },
-          { label: '停用', value: 0 },
+          { label: $t('ai.text2sqlPage.table.enabled'), value: 1 },
+          { label: $t('ai.text2sqlPage.table.disabledOption'), value: 0 },
         ],
       },
       fieldName: 'enabled',
-      label: '状态',
+      label: $t('ai.text2sqlPage.table.status'),
     },
   ],
 };
@@ -93,7 +94,7 @@ function onActionClick({ code, row }: OnActionClickParams<AIText2SqlTableResult>
   switch (code) {
     case 'delete': {
       deleteSelectedTableApi(row.id).then(() => {
-        message.success({ content: '已取消挑选', key: 'action_process_msg' });
+        message.success({ content: $t('ai.text2sqlPage.table.unselected'), key: 'action_process_msg' });
         onRefresh();
       });
       break;
@@ -132,7 +133,7 @@ const [Modal, modalApi] = useVbenModal({
         enabled: data.enabled,
         sort: data.sort,
       });
-      message.success('已更新');
+      message.success($t('ai.text2sqlPage.table.updated'));
       await modalApi.close();
       onRefresh();
     } catch (error) {
@@ -165,11 +166,11 @@ const [PickModal, pickModalApi] = useVbenModal({
   destroyOnClose: true,
   async onConfirm() {
     if (!props.datasetId) {
-      message.warning('请先选择数据集');
+      message.warning($t('ai.text2sqlPage.table.pleaseSelectDataset'));
       return;
     }
     if (!pickTable.value) {
-      message.warning('请选择要挑选的表');
+      message.warning($t('ai.text2sqlPage.table.pleaseSelectTable'));
       return;
     }
     pickModalApi.lock();
@@ -183,7 +184,7 @@ const [PickModal, pickModalApi] = useVbenModal({
         custom_desc: pickCustomDesc.value.trim() || undefined,
       };
       await createSelectedTableApi(payload);
-      message.success('已挑选');
+      message.success($t('ai.text2sqlPage.table.picked'));
       await pickModalApi.close();
       onRefresh();
     } catch (error) {
@@ -207,7 +208,7 @@ const [PickModal, pickModalApi] = useVbenModal({
             value: table.table_name,
           }));
         if (pickOptions.value.length === 0) {
-          message.info('已挑选全部可用的表');
+          message.info($t('ai.text2sqlPage.table.allPicked'));
         }
       } catch {
         pickOptions.value = [];
@@ -225,28 +226,28 @@ const [PickModal, pickModalApi] = useVbenModal({
         @click="() => pickModalApi.setData(null).open()"
       >
         <MaterialSymbolsAdd class="size-5" />
-        挑选表
+        {{ $t('ai.text2sqlPage.table.pick') }}
       </VbenButton>
     </template>
   </Grid>
-  <Modal content-class="px-4 py-4 md:px-5 md:py-5" title="编辑已选表">
+  <Modal content-class="px-4 py-4 md:px-5 md:py-5" :title="$t('ai.text2sqlPage.table.editTitle')">
     <Form />
   </Modal>
-  <PickModal content-class="px-4 py-4 md:px-5 md:py-5" title="挑选表">
+  <PickModal content-class="px-4 py-4 md:px-5 md:py-5" :title="$t('ai.text2sqlPage.table.pick')">
     <div class="flex flex-col gap-4">
       <a-alert type="info" show-icon>
-        <template #message>仅可选择尚未挑选的表，表名来自 fba 库反查</template>
+        <template #message>{{ $t('ai.text2sqlPage.table.pickAlert') }}</template>
       </a-alert>
       <a-select
         v-model:value="pickTable"
         :options="pickOptions"
         show-search
-        placeholder="选择未挑选的表"
+        :placeholder="$t('ai.text2sqlPage.table.pickPlaceholder')"
       />
       <a-textarea
         v-model:value="pickCustomDesc"
         :auto-size="{ minRows: 3, maxRows: 6 }"
-        placeholder="自定义描述（可选，补充业务语义以提升生成精度）"
+        :placeholder="$t('ai.text2sqlPage.table.pickCustomDescPlaceholder')"
       />
     </div>
   </PickModal>
