@@ -1,70 +1,46 @@
 import type {
-  ActivityMessage,
   AssistantMessage,
   DeveloperMessage,
   MessagesSnapshotEvent,
-  ReasoningMessage,
   SystemMessage,
-  ToolMessage,
   UserMessage,
 } from '@ag-ui/core';
 
-import type { Recordable } from '@vben/types';
-
 import type {
-  AIChatProtocolChunk,
-  AIChatProtocolName,
-} from '../protocols/types';
-import type {
+  AIChatAttachmentType,
   AIChatMessageDetail,
   AIMessageType,
-} from '../runtime/message-types';
+} from '../types/message';
 
 import { useAppConfig } from '@vben/hooks';
 import { preferences } from '@vben/preferences';
 import { useAccessStore } from '@vben/stores';
 
 import { requestClient } from '#/api/request';
+
+import { normalizeAGUIConversationDetail } from '../runtime/ag-ui/deserialize';
 import {
   buildAIChatCompletionRequest,
-  normalizeAIChatConversationDetail,
-} from '#/plugins/ai/protocols';
+  buildAIChatRegenerateRequest,
+} from './chat-request';
 
 export type AIActionResult = null | string;
 
 export interface AIChatForwardedPropsParams {
-  enableBuiltinTools?: boolean;
-  extraBody?: null | Recordable<unknown>;
-  extraHeaders?: null | Recordable<string>;
-  frequencyPenalty?: null | number;
-  generationType?: AIChatGenerationType;
-  logitBias?: null | Recordable<number>;
-  maxTokens?: null | number;
-  mcpIds?: null | number[];
   modelId: string;
-  parallelToolCalls?: boolean | null;
-  presencePenalty?: null | number;
   providerId: number;
-  seed?: null | number;
-  stopSequences?: null | string[];
-  temperature?: null | number;
-  thinking?: AIChatThinkingType | boolean | null;
-  timeout?: null | number;
-  topP?: null | number;
-  webSearch?: AIWebSearchType;
 }
 
 export interface AIChatCompletionParams {
   conversationId?: null | string;
   forwardedProps: AIChatForwardedPropsParams;
-  messages: AIChatProtocolMessagePayload;
+  messages: [AIChatProtocolInputMessage, ...AIChatProtocolInputMessage[]];
 }
 
 export type AIChatProtocolInputMessage =
   | AssistantMessage
   | DeveloperMessage
   | SystemMessage
-  | ToolMessage
   | UserMessage;
 
 export type AIChatProtocolMessagePayload = AIChatProtocolInputMessage[];
@@ -73,12 +49,13 @@ export interface AIChatConversationResult {
   conversation_id: string;
   created_time: string;
   id: number;
+  is_generating?: boolean;
   is_pinned: boolean;
   title: string;
   updated_time?: null | string;
 }
 
-export interface AIChatProtocolMessageMetadata {
+interface AIChatProtocolMessageMetadata {
   content?: unknown;
   conversationId?: null | string;
   createdTime?: null | string;
@@ -91,20 +68,16 @@ export interface AIChatProtocolMessageMetadata {
 }
 
 export type AIChatProtocolConversationMessage =
-  | (ActivityMessage & AIChatProtocolMessageMetadata)
   | (AIChatProtocolMessageMetadata & AssistantMessage)
   | (AIChatProtocolMessageMetadata & DeveloperMessage)
-  | (AIChatProtocolMessageMetadata & ReasoningMessage)
   | (AIChatProtocolMessageMetadata & SystemMessage)
-  | (AIChatProtocolMessageMetadata & ToolMessage)
   | (AIChatProtocolMessageMetadata & UserMessage);
 
 export interface AIChatConversationDetailResult {
-  contextClearedTime?: null | string;
-  contextStartMessageId?: null | number;
   conversationId: string;
   createdTime: string;
   id: number;
+  isGenerating?: boolean;
   isPinned: boolean;
   messagesSnapshot: AIChatProtocolMessagesSnapshot;
   modelId: string;
@@ -122,44 +95,29 @@ export type AIChatProtocolMessagesSnapshot = Omit<
 };
 
 export interface AIChatRegenerateParams {
+  content?: null | string;
   conversationId?: null | string;
   forwardedProps: AIChatForwardedPropsParams;
 }
-
-export type AIChatGenerationType = 'image' | 'text';
-export type AIChatThinkingType =
-  | 'high'
-  | 'low'
-  | 'medium'
-  | 'minimal'
-  | 'xhigh';
-export type AIWebSearchType = 'builtin' | 'duckduckgo' | 'exa' | 'tavily';
 
 export interface AIChatComposerParams {
   mode: 'create' | 'edit' | 'regenerate';
   conversation_id?: null | string;
   edit_message_id?: null | number;
   regenerate_message_id?: null | number;
-  generation_type?: AIChatGenerationType;
   provider_id: number;
   model_id: string;
-  user_prompt?: null | string;
-  max_tokens?: null | number;
-  temperature?: null | number;
-  top_p?: null | number;
-  timeout?: null | number;
-  parallel_tool_calls?: boolean | null;
-  seed?: null | number;
-  presence_penalty?: null | number;
-  frequency_penalty?: null | number;
-  logit_bias?: null | Recordable<number>;
-  stop_sequences?: null | string[];
-  extra_headers?: null | Recordable<string>;
-  extra_body?: null | string;
-  thinking?: AIChatThinkingType | boolean | null;
-  enable_builtin_tools?: boolean;
-  mcp_ids?: null | number[];
-  web_search?: AIWebSearchType;
+}
+
+export interface AIChatComposerAttachment {
+  data?: null | string;
+  file_type?: AIChatAttachmentType | null;
+  id?: string;
+  mime_type?: null | string;
+  name?: null | string;
+  size?: null | number;
+  source_type?: 'base64' | 'url' | null;
+  url?: null | string;
 }
 
 export interface AIChatConversationQueryParams {
@@ -174,11 +132,10 @@ export interface AIChatConversationListResult {
 }
 
 export interface AIChatConversationDetail {
-  context_cleared_time?: null | string;
-  context_start_message_id?: null | number;
   conversation_id: string;
   created_time: string;
   id: number;
+  is_generating?: boolean;
   is_pinned: boolean;
   message_count?: number;
   messages: AIChatMessageDetail[];
@@ -196,19 +153,7 @@ export interface AIChatConversationPinParams {
   is_pinned: boolean;
 }
 
-export interface AIChatMessageUpdateParams {
-  content: string;
-}
-
-export interface AIChatStreamOptions {
-  onChunk: (chunk: AIChatProtocolChunk) => void;
-  signal?: AbortSignal;
-}
-
-export type AIChatTransportMode =
-  | 'create'
-  | 'regenerate-from-message'
-  | 'regenerate-from-response';
+export type AIChatTransportMode = 'create' | 'regenerate-from-message';
 
 export interface AIChatTransportRequest {
   body: AIChatCompletionParams | AIChatRegenerateParams;
@@ -218,93 +163,84 @@ export interface AIChatTransportRequest {
 }
 
 export interface BuildChatCompletionRequestInput {
+  attachments?: AIChatComposerAttachment[];
   conversationId?: null | string;
-  history: AIChatMessageDetail[];
   params: AIChatComposerParams;
   promptText?: string;
 }
 
-export interface AIChatProtocolOptions {
-  protocolName?: AIChatProtocolName;
+export interface BuildChatRegenerateRequestInput {
+  content?: null | string;
+  conversationId: string;
+  params: AIChatComposerParams;
 }
 
-function parseExtraBody(
-  raw: null | string | undefined,
-): null | Recordable<unknown> | undefined {
-  const text = raw?.trim();
-  if (!text) {
-    return undefined;
+export function inferAIChatAttachmentType(
+  name?: null | string,
+  mimeType?: null | string,
+): AIChatAttachmentType | null {
+  if (mimeType?.startsWith('audio/')) {
+    return 'audio';
+  }
+  if (mimeType?.startsWith('image/')) {
+    return 'image';
+  }
+  if (mimeType?.startsWith('video/')) {
+    return 'video';
   }
 
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Recordable<unknown>;
-    }
-  } catch {
-    // Keep current page-level validation behavior.
+  const lowerName = name?.toLowerCase() ?? '';
+  if (/\.(avif|bmp|gif|jpe?g|png|svg|webp)$/u.test(lowerName)) {
+    return 'image';
+  }
+  if (/\.(aac|flac|m4a|mp3|ogg|wav|weba)$/u.test(lowerName)) {
+    return 'audio';
+  }
+  if (/\.(avi|m4v|mkv|mov|mp4|mpeg|webm)$/u.test(lowerName)) {
+    return 'video';
   }
 
-  return undefined;
-}
-
-function toForwardedProps(params: AIChatComposerParams): AIChatForwardedPropsParams {
-  return {
-    enableBuiltinTools: params.enable_builtin_tools ?? true,
-    extraBody: parseExtraBody(params.extra_body),
-    extraHeaders: params.extra_headers ?? undefined,
-    frequencyPenalty: params.frequency_penalty,
-    generationType: params.generation_type ?? 'text',
-    logitBias: params.logit_bias ?? undefined,
-    maxTokens: params.max_tokens,
-    mcpIds: params.mcp_ids ?? undefined,
-    modelId: params.model_id,
-    parallelToolCalls: params.parallel_tool_calls,
-    presencePenalty: params.presence_penalty,
-    providerId: params.provider_id,
-    seed: params.seed,
-    stopSequences: params.stop_sequences ?? undefined,
-    temperature: params.temperature,
-    thinking: params.thinking,
-    timeout: params.timeout,
-    topP: params.top_p,
-    webSearch: params.web_search,
-  };
+  return 'document';
 }
 
 export function buildChatCompletionRequest(
   input: BuildChatCompletionRequestInput,
-  options: AIChatProtocolOptions = {},
 ): AIChatCompletionParams {
-  return buildAIChatCompletionRequest(
-    input,
-    toForwardedProps(input.params),
-    options.protocolName,
-  );
+  return buildAIChatCompletionRequest(input, {
+    inferAttachmentType: inferAIChatAttachmentType,
+    resolveUrl: resolveAIChatApiUrl,
+  });
+}
+
+export function buildChatRegenerateRequest(
+  input: BuildChatRegenerateRequestInput,
+): AIChatRegenerateParams {
+  return buildAIChatRegenerateRequest(input);
 }
 
 const { apiURL } = useAppConfig(import.meta.env, import.meta.env.PROD);
 
 function joinApiUrl(baseUrl: string, url: string) {
+  if (/^(blob:|data:|https?:\/\/)/iu.test(url)) {
+    return url;
+  }
+
   if (/^https?:\/\//i.test(baseUrl)) {
     return new URL(url, baseUrl).toString();
   }
-  return `${baseUrl.replace(/\/+$/, '')}/${url.replace(/^\/+/, '')}`;
+
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
+  if (
+    normalizedBaseUrl &&
+    (url === normalizedBaseUrl || url.startsWith(`${normalizedBaseUrl}/`))
+  ) {
+    return url;
+  }
+
+  return `${normalizedBaseUrl}/${url.replace(/^\/+/, '')}`;
 }
 
-export function resolveAIChatTransportUrl(request: AIChatTransportRequest) {
-  switch (request.mode) {
-    case 'create': {
-      return '/api/v1/chat/completions';
-    }
-    case 'regenerate-from-message': {
-      return `/api/v1/conversations/${request.conversationId}/messages/${request.messageId}/regenerate`;
-    }
-    case 'regenerate-from-response': {
-      return `/api/v1/conversations/${request.conversationId}/messages/${request.messageId}/responses/regenerate`;
-    }
-  }
-}
+export { resolveAIChatTransportUrl } from './chat-transport';
 
 export function resolveAIChatApiUrl(url: string) {
   return joinApiUrl(apiURL, url);
@@ -323,57 +259,7 @@ export function getAIChatRequestHeaders() {
   };
 }
 
-export async function readAIChatErrorMessage(response: Response) {
-  const text = await response.text();
-
-  try {
-    const payload = JSON.parse(text);
-    return payload?.error ?? payload?.msg ?? payload?.message ?? text;
-  } catch {
-    return text || `HTTP ${response.status}`;
-  }
-}
-
-async function postAIChatSSE(
-  request: AIChatTransportRequest,
-  options: AIChatStreamOptions,
-) {
-  const response = await fetch(
-    resolveAIChatApiUrl(resolveAIChatTransportUrl(request)),
-    {
-      body: JSON.stringify(request.body),
-      headers: getAIChatRequestHeaders(),
-      method: 'POST',
-      signal: options.signal,
-    },
-  );
-
-  if (!response.ok) {
-    throw new Error(await readAIChatErrorMessage(response));
-  }
-
-  const reader = response.body?.getReader();
-  if (!reader) {
-    throw new Error('AI stream is unavailable');
-  }
-
-  const decoder = new TextDecoder();
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      reader.releaseLock?.();
-      break;
-    }
-
-    const payload = decoder.decode(value, { stream: true });
-    if (payload) {
-      options.onChunk({
-        data: payload,
-      });
-    }
-  }
-}
+export { readAIChatErrorMessage } from './response';
 
 export async function getRecentAIChatConversationsApi(
   params?: AIChatConversationQueryParams,
@@ -395,13 +281,12 @@ export async function getRecentAIChatConversationsApi(
 
 export async function getAIChatConversationDetailApi(
   conversationId: string,
-  options: AIChatProtocolOptions = {},
 ): Promise<AIChatConversationDetail> {
   const data = await requestClient.get<AIChatConversationDetailResult>(
     `/api/v1/conversations/${conversationId}`,
   );
 
-  return normalizeAIChatConversationDetail(data, options.protocolName);
+  return normalizeAGUIConversationDetail(data);
 }
 
 export async function updateAIChatConversationApi(
@@ -438,11 +323,9 @@ export async function clearAIChatConversationMessagesApi(
   );
 }
 
-export async function clearAIChatConversationContextApi(
-  conversationId: string,
-) {
+export async function stopAIChatConversationApi(conversationId: string) {
   return requestClient.post<AIActionResult>(
-    `/api/v1/conversations/${conversationId}/clear-context`,
+    `/api/v1/conversations/${conversationId}/stop`,
   );
 }
 
@@ -452,70 +335,5 @@ export async function deleteAIChatMessageApi(
 ) {
   return requestClient.delete<AIActionResult>(
     `/api/v1/conversations/${conversationId}/messages/${messageId}`,
-  );
-}
-
-export async function updateAIChatMessageApi(
-  conversationId: string,
-  messageId: number,
-  data: AIChatMessageUpdateParams,
-) {
-  return requestClient.put<AIActionResult>(
-    `/api/v1/conversations/${conversationId}/messages/${messageId}`,
-    data,
-  );
-}
-
-export async function streamAIChatTransport(
-  request: AIChatTransportRequest,
-  options: AIChatStreamOptions,
-) {
-  return postAIChatSSE(request, options);
-}
-
-export async function streamAIChatApi(
-  data: AIChatCompletionParams,
-  options: AIChatStreamOptions,
-) {
-  return streamAIChatTransport(
-    {
-      body: data,
-      mode: 'create',
-    },
-    options,
-  );
-}
-
-export async function regenerateAIChatFromMessageApi(
-  conversationId: string,
-  messageId: number,
-  data: AIChatRegenerateParams,
-  options: AIChatStreamOptions,
-) {
-  return streamAIChatTransport(
-    {
-      body: data,
-      conversationId,
-      messageId,
-      mode: 'regenerate-from-message',
-    },
-    options,
-  );
-}
-
-export async function regenerateAIChatFromResponseApi(
-  conversationId: string,
-  messageId: number,
-  data: AIChatRegenerateParams,
-  options: AIChatStreamOptions,
-) {
-  return streamAIChatTransport(
-    {
-      body: data,
-      conversationId,
-      messageId,
-      mode: 'regenerate-from-response',
-    },
-    options,
   );
 }

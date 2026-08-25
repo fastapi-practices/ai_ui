@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AIProviderResult } from '#/plugins/ai/api';
+import type { AIProviderResult } from '../../api';
 
 import { computed, ref } from 'vue';
 
@@ -7,12 +7,11 @@ import { ColPage } from '@vben/common-ui';
 
 import ModelPane from './components/model-pane.vue';
 import ProviderPane from './components/provider-pane.vue';
-import { buildProviderNameMap, pickActiveProviderId } from './data';
+import { pickActiveProviderId } from './data';
 
 const providers = ref<AIProviderResult[]>([]);
 const activeProviderId = ref<number>();
 
-const providerNameMap = computed(() => buildProviderNameMap(providers.value));
 const activeProvider = computed(() => {
   return providers.value.find((item) => item.id === activeProviderId.value);
 });
@@ -39,7 +38,7 @@ function handleProviderSelect(providerId: number) {
     :right-width="80"
   >
     <template #left>
-      <div class="mr-2 h-full">
+      <div class="h-full">
         <ProviderPane
           :active-provider-id="activeProviderId"
           @providers-change="handleProvidersChange"
@@ -48,10 +47,6 @@ function handleProviderSelect(providerId: number) {
       </div>
     </template>
 
-    <ModelPane
-      :key="activeProviderId ?? 'empty'"
-      :provider="activeProvider"
-      :provider-name-map="providerNameMap"
-    />
+    <ModelPane :key="activeProviderId ?? 'empty'" :provider="activeProvider" />
   </ColPage>
 </template>

@@ -6,15 +6,77 @@ import type {
   AIChatMessageDetail,
   AIChatReasoningMessageBlock,
   AIChatTextMessageBlock,
-} from './message-types';
+} from '../types/message';
 
-import {
-  normalizeAIChatEventBlock,
-  normalizeAIChatFileBlock,
-  normalizeAIChatMessageBlock,
-  normalizeAIChatTextLikeBlock,
-  uniqueAIChatEventTypes,
-} from './message-block';
+export function uniqueAIChatEventTypes(
+  ...values: Array<Array<null | string | undefined> | null | string | undefined>
+) {
+  const result: string[] = [];
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item && !result.includes(item)) {
+          result.push(item);
+        }
+      }
+      continue;
+    }
+    if (value && !result.includes(value)) {
+      result.push(value);
+    }
+  }
+  return result;
+}
+
+export function normalizeAIChatEventBlock(
+  block: AIChatEventMessageBlock,
+): AIChatEventMessageBlock {
+  return {
+    data: block.data,
+    event_key: block.event_key,
+    event_type: block.event_type,
+    event_types: uniqueAIChatEventTypes(
+      block.event_types ?? [],
+      block.event_type,
+    ),
+    status: block.status ?? 'info',
+    summary: block.summary ?? '',
+    text: block.text ?? '',
+    title: block.title,
+    type: 'event',
+  };
+}
+
+export function normalizeAIChatFileBlock(
+  block: AIChatFileMessageBlock,
+): AIChatFileMessageBlock {
+  return {
+    file_type: block.file_type ?? null,
+    mime_type: block.mime_type ?? null,
+    name: block.name ?? null,
+    source_type: block.source_type ?? null,
+    type: 'file',
+    url: block.url ?? null,
+  };
+}
+
+export function normalizeAIChatTextLikeBlock<
+  T extends AIChatReasoningMessageBlock | AIChatTextMessageBlock,
+>(block: T): T {
+  return { text: block.text ?? '', type: block.type } as T;
+}
+
+function normalizeAIChatMessageBlock(
+  block: AIChatMessageBlock,
+): AIChatMessageBlock {
+  if (block.type === 'event') {
+    return normalizeAIChatEventBlock(block);
+  }
+  if (block.type === 'file') {
+    return normalizeAIChatFileBlock(block);
+  }
+  return normalizeAIChatTextLikeBlock(block);
+}
 
 export type ChatMessageItem = AIChatMessageDetail & {
   id: string;
@@ -103,17 +165,23 @@ export function mergeModelContent(previous: string, incoming: string) {
   return `${previous}${incoming}`;
 }
 
+function mergeSeparatedModelContent(previous: string, incoming: string) {
+  if (!previous) {
+    return incoming;
+  }
+  if (!incoming) {
+    return previous;
+  }
+  if (incoming.startsWith(previous)) {
+    return incoming;
+  }
+  return `${previous.trimEnd()}\n\n${incoming.trimStart()}`;
+}
+
 export function createTextBlock(text = ''): AIChatTextMessageBlock {
   return {
     text,
     type: 'text',
-  };
-}
-
-export function createReasoningBlock(text = ''): AIChatReasoningMessageBlock {
-  return {
-    text,
-    type: 'reasoning',
   };
 }
 
@@ -145,10 +213,6 @@ export function getMessageEventBlocks(message: Pick<AIChatMessage, 'blocks'>) {
   return getBlocksByType(message, 'event');
 }
 
-export function getEditableMessageText(message: Pick<AIChatMessage, 'blocks'>) {
-  return getMessageTextContent(message, 'text');
-}
-
 export function replaceMessageTextBlocks(
   message: ChatMessageItem,
   content: string,
@@ -166,32 +230,15 @@ export function replaceMessageTextBlocks(
   };
 }
 
-export function hasRenderableMessageContent(message: Pick<AIChatMessage, 'blocks'>) {
-  return (message.blocks ?? []).some((block) => {
-    if (block.type === 'event') {
-      return Boolean(
-        block.title ||
-          block.summary?.trim() ||
-          block.text?.trim() ||
-          block.data !== undefined,
-      );
-    }
-
-    if (block.type === 'file') {
-      return Boolean(block.url || block.name || block.mime_type || block.file_type);
-    }
-
-    return Boolean(block.text?.trim());
-  });
-}
-
 export function normalizeMessage(
   item: AIChatMessage | AIChatMessageDetail,
   fallbackIndex: number,
   activeConversationId?: null | string,
 ): ChatMessageItem {
   return {
-    blocks: (item.blocks ?? []).map((block) => normalizeAIChatMessageBlock(block)),
+    blocks: (item.blocks ?? []).map((block) =>
+      normalizeAIChatMessageBlock(block),
+    ),
     conversation_id: item.conversation_id ?? activeConversationId ?? null,
     created_time: item.created_time,
     id: buildMessageId(
@@ -221,16 +268,26 @@ export function createProviderSeedMessage(
 export function createProviderUserMessage(
   content: string,
   createdTime = new Date().toISOString(),
+  files: AIChatFileMessageBlock[] = [],
 ): AIChatProviderMessage {
+  const blocks: AIChatMessageBlock[] = [];
+  const text = content.trim();
+
+  if (text) {
+    blocks.push(createTextBlock(text));
+  }
+
+  blocks.push(...files.map((file) => normalizeAIChatFileBlock(file)));
+
   return {
-    blocks: [createTextBlock(content)],
+    blocks,
     created_time: createdTime,
     message_type: 'normal',
     role: 'user',
   };
 }
 
-export function normalizeProviderMessage(
+function normalizeProviderMessage(
   message: AIChatProviderMessage,
   fallbackIndex: number,
 ): ChatMessageItem[] {
@@ -253,23 +310,56 @@ export function normalizeProviderMessage(
   return [item];
 }
 
-function hasReasoningBlocks(message: Pick<AIChatMessage, 'blocks'>) {
-  return getBlocksByType(message, 'reasoning').length > 0;
+function hasTextBlocks(message: Pick<AIChatMessage, 'blocks'>) {
+  return Boolean(getMessageTextContent(message, 'text').trim());
+}
+
+function hasStandaloneErrorContent(message: ChatMessageItem) {
+  return message.message_type === 'error' && hasTextBlocks(message);
+}
+
+function hasMessageId(message: ChatMessageItem) {
+  return message.message_id !== null && message.message_id !== undefined;
+}
+
+function hasSameAssistantMessageIdentity(
+  current: ChatMessageItem,
+  incoming: ChatMessageItem,
+) {
+  const currentHasMessageId = hasMessageId(current);
+  const incomingHasMessageId = hasMessageId(incoming);
+
+  if (currentHasMessageId || incomingHasMessageId) {
+    return (
+      currentHasMessageId &&
+      incomingHasMessageId &&
+      current.message_id === incoming.message_id
+    );
+  }
+
+  return current.message_index === incoming.message_index;
 }
 
 function shouldMergeAssistantMessages(
   current: ChatMessageItem | undefined,
   incoming: ChatMessageItem,
 ) {
-  if (!current || current.role !== 'assistant' || incoming.role !== 'assistant') {
+  if (
+    !current ||
+    current.role !== 'assistant' ||
+    incoming.role !== 'assistant'
+  ) {
     return false;
   }
 
-  if (current.message_type === 'error' || incoming.message_type === 'error') {
+  if (!hasSameAssistantMessageIdentity(current, incoming)) {
     return false;
   }
 
-  if (!hasReasoningBlocks(current) && !hasReasoningBlocks(incoming)) {
+  if (
+    hasStandaloneErrorContent(current) ||
+    hasStandaloneErrorContent(incoming)
+  ) {
     return false;
   }
 
@@ -281,7 +371,11 @@ function shouldMergeAssistantMessages(
     return false;
   }
 
-  if (current.model_id && incoming.model_id && current.model_id !== incoming.model_id) {
+  if (
+    current.model_id &&
+    incoming.model_id &&
+    current.model_id !== incoming.model_id
+  ) {
     return false;
   }
 
@@ -302,15 +396,23 @@ function mergeChatMessageItems(
   current: ChatMessageItem,
   incoming: ChatMessageItem,
 ): ChatMessageItem {
+  const messageType =
+    current.message_type === 'error' && incoming.message_type === 'error'
+      ? 'error'
+      : 'normal';
+
   return {
     ...incoming,
-    blocks: mergeMessageBlocks(current.blocks ?? [], incoming.blocks ?? []),
-    conversation_id: incoming.conversation_id ?? current.conversation_id ?? null,
+    blocks: mergeMessageBlocks(current.blocks ?? [], incoming.blocks ?? [], {
+      separatedReasoning: true,
+    }),
+    conversation_id:
+      incoming.conversation_id ?? current.conversation_id ?? null,
     created_time: current.created_time || incoming.created_time,
     id: incoming.id || current.id,
     message_id: incoming.message_id ?? current.message_id ?? null,
     message_index: incoming.message_index ?? current.message_index,
-    message_type: incoming.message_type ?? current.message_type ?? 'normal',
+    message_type: messageType,
     model_id: incoming.model_id ?? current.model_id ?? null,
     provider_id: incoming.provider_id ?? current.provider_id ?? null,
     role: incoming.role,
@@ -335,9 +437,49 @@ export function mergeAdjacentAssistantMessages(messages: ChatMessageItem[]) {
   return merged;
 }
 
+export function mergeAdjacentAssistantMessagesInOrder(
+  messages: ChatMessageItem[],
+) {
+  const merged: ChatMessageItem[] = [];
+
+  for (const message of messages) {
+    const current = merged.at(-1);
+
+    if (!current || !shouldMergeAssistantMessages(current, message)) {
+      merged.push(message);
+      continue;
+    }
+
+    const messageType =
+      current.message_type === 'error' && message.message_type === 'error'
+        ? 'error'
+        : 'normal';
+
+    merged[merged.length - 1] = {
+      ...message,
+      blocks: mergeMessageBlocks(current.blocks ?? [], message.blocks ?? [], {
+        separatedReasoning: true,
+      }),
+      conversation_id:
+        message.conversation_id ?? current.conversation_id ?? null,
+      created_time: current.created_time || message.created_time,
+      id: current.id || message.id,
+      message_id: current.message_id ?? message.message_id ?? null,
+      message_index: current.message_index ?? message.message_index,
+      message_type: messageType,
+      model_id: message.model_id ?? current.model_id ?? null,
+      provider_id: message.provider_id ?? current.provider_id ?? null,
+      role: message.role,
+      streaming: Boolean(current.streaming || message.streaming),
+    };
+  }
+
+  return merged;
+}
+
 function getBlockMergeKey(block: AIChatMessageBlock) {
   if (block.type === 'event') {
-    return `event:${block.event_key}`;
+    return `event:${block.event_key}:${block.event_type}`;
   }
 
   if (block.type === 'file') {
@@ -350,15 +492,59 @@ function getBlockMergeKey(block: AIChatMessageBlock) {
 export function mergeMessageBlocks(
   currentBlocks: AIChatMessageBlock[],
   incomingBlocks: AIChatMessageBlock[],
+  options: {
+    separatedReasoning?: boolean;
+  } = {},
 ) {
-  const merged = currentBlocks.map((block) => normalizeAIChatMessageBlock(block));
+  const merged = currentBlocks.map((block) =>
+    normalizeAIChatMessageBlock(block),
+  );
 
-  for (const incoming of incomingBlocks.map((block) => normalizeAIChatMessageBlock(block))) {
-    const index = merged.findIndex(
-      (block) => getBlockMergeKey(block) === getBlockMergeKey(incoming),
-    );
+  for (const incoming of incomingBlocks.map((block) =>
+    normalizeAIChatMessageBlock(block),
+  )) {
+    if (incoming.type === 'reasoning') {
+      const existingReasoningIndex = merged.length - 1;
+      const existingReasoningBlock = merged[existingReasoningIndex];
+
+      if (existingReasoningBlock?.type !== 'reasoning') {
+        merged.push(incoming);
+        continue;
+      }
+
+      const previous = existingReasoningBlock as AIChatReasoningMessageBlock;
+      merged[existingReasoningIndex] = normalizeAIChatTextLikeBlock({
+        ...previous,
+        text: options.separatedReasoning
+          ? mergeSeparatedModelContent(previous.text ?? '', incoming.text ?? '')
+          : mergeModelContent(previous.text ?? '', incoming.text ?? ''),
+        type: incoming.type,
+      });
+      continue;
+    }
+
+    if (incoming.type === 'text') {
+      const latestIndex = merged.length - 1;
+      const previous = merged[latestIndex];
+
+      if (previous?.type !== incoming.type) {
+        merged.push(incoming);
+        continue;
+      }
+
+      merged[latestIndex] = normalizeAIChatTextLikeBlock({
+        ...previous,
+        text: mergeModelContent(previous.text ?? '', incoming.text ?? ''),
+        type: incoming.type,
+      });
+      continue;
+    }
 
     if (incoming.type === 'event') {
+      const index = merged.findIndex(
+        (block) => getBlockMergeKey(block) === getBlockMergeKey(incoming),
+      );
+
       if (index === -1) {
         merged.push(incoming);
       } else {
@@ -384,6 +570,10 @@ export function mergeMessageBlocks(
     }
 
     if (incoming.type === 'file') {
+      const index = merged.findIndex(
+        (block) => getBlockMergeKey(block) === getBlockMergeKey(incoming),
+      );
+
       if (index === -1) {
         merged.push(incoming);
       } else {
@@ -394,18 +584,6 @@ export function mergeMessageBlocks(
       }
       continue;
     }
-
-    if (index === -1) {
-      merged.push(incoming);
-      continue;
-    }
-
-    const previous = merged[index] as AIChatReasoningMessageBlock | AIChatTextMessageBlock;
-    merged[index] = normalizeAIChatTextLikeBlock({
-      ...previous,
-      text: mergeModelContent(previous.text ?? '', incoming.text ?? ''),
-      type: incoming.type,
-    });
   }
 
   return merged;
@@ -418,8 +596,12 @@ export function mergeStreamMessage(
   return {
     ...incoming,
     blocks: mergeMessageBlocks(current?.blocks ?? [], incoming.blocks),
-    conversation_id: incoming.conversation_id ?? current?.conversation_id ?? null,
-    created_time: incoming.created_time || current?.created_time || new Date().toISOString(),
+    conversation_id:
+      incoming.conversation_id ?? current?.conversation_id ?? null,
+    created_time:
+      incoming.created_time ||
+      current?.created_time ||
+      new Date().toISOString(),
     message_id: incoming.message_id ?? current?.message_id,
     message_type: incoming.message_type ?? current?.message_type ?? 'normal',
     model_id: incoming.model_id ?? current?.model_id ?? null,
@@ -429,28 +611,13 @@ export function mergeStreamMessage(
 
 export function providerMessageToChatMessage(
   originMessage: AIChatProviderMessage | undefined,
-  incoming: AIChatMessage,
-) {
-  const nextMessage: AIChatProviderMessage = {
-    blocks: (incoming.blocks ?? []).map((block) => normalizeAIChatMessageBlock(block)),
-    conversation_id:
-      incoming.conversation_id ?? originMessage?.conversation_id ?? null,
-    created_time: incoming.created_time,
-    message_id:
-      incoming.message_id === undefined || incoming.message_id === null
-        ? originMessage?.message_id
-        : String(incoming.message_id),
-    message_type: incoming.message_type,
-    model_id: incoming.model_id ?? originMessage?.model_id ?? null,
-    provider_id: incoming.provider_id ?? originMessage?.provider_id ?? null,
-    role: incoming.role,
-  };
-
+  incoming: AIChatProviderMessage,
+): AIChatProviderMessage {
   if (incoming.role === 'assistant') {
-    return mergeStreamMessage(originMessage, nextMessage);
+    return mergeStreamMessage(originMessage, incoming);
   }
 
-  return nextMessage;
+  return incoming;
 }
 
 function resolveTransientEventBlockStatus(
@@ -511,14 +678,16 @@ export function buildTransientMessageItems(
     return [];
   }
 
-  return normalizeProviderMessage(providerMessage, fallbackIndex).map((item) => {
-    const nextItem = applyTransientEventBlockStatus(item, status);
+  return normalizeProviderMessage(providerMessage, fallbackIndex).map(
+    (item) => {
+      const nextItem = applyTransientEventBlockStatus(item, status);
 
-    return {
-      ...nextItem,
-      streaming:
-        nextItem.role === 'assistant' &&
-        (status === 'loading' || status === 'updating'),
-    };
-  });
+      return {
+        ...nextItem,
+        streaming:
+          nextItem.role === 'assistant' &&
+          (status === 'loading' || status === 'updating'),
+      };
+    },
+  );
 }

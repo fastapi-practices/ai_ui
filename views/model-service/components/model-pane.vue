@@ -1,17 +1,17 @@
 <script setup lang="ts">
-import type { PaginationResult } from '#/types';
+import type {
+  AIBatchCreateModelsParams,
+  AIModelResult,
+  AIProviderModelResult,
+  AIProviderResult,
+} from '../../../api';
+
 import type { VbenFormProps } from '#/adapter/form';
 import type {
   OnActionClickParams,
   VxeTableGridOptions,
 } from '#/adapter/vxe-table';
-import type {
-  AIBatchCreateModelsParams,
-  AIModelParams,
-  AIModelResult,
-  AIProviderModelResult,
-  AIProviderResult,
-} from '#/plugins/ai/api';
+import type { PaginationResult } from '#/types';
 
 import { computed, ref } from 'vue';
 
@@ -23,6 +23,7 @@ import { message } from 'antdv-next';
 
 import { useVbenForm } from '#/adapter/form';
 import { useVbenVxeGrid } from '#/adapter/vxe-table';
+
 import {
   batchCreateAIModelApi,
   createAIModelApi,
@@ -32,17 +33,12 @@ import {
   getAllAIModelApi,
   syncAIProviderModelsApi,
   updateAIModelApi,
-} from '#/plugins/ai/api';
-
-import {
-  createModelSchema,
-  queryModelSchema,
-  useModelColumns,
-} from '../data';
+} from '../../../api';
+import { createModelSchema, queryModelSchema, useModelColumns } from '../data';
+import { createAIModelPayload, type AIModelFormValues } from '../model-params';
 
 const props = defineProps<{
   provider?: AIProviderResult;
-  providerNameMap: Map<number, string>;
 }>();
 
 const EMPTY_PAGINATION: PaginationResult<AIModelResult> = {
@@ -81,10 +77,7 @@ const gridOptions: VxeTableGridOptions<AIModelResult> = {
     },
     zoom: true,
   },
-  columns: useModelColumns(
-    computed(() => props.providerNameMap),
-    onActionClick,
-  ),
+  columns: useModelColumns(onActionClick),
   proxyConfig: {
     ajax: {
       query: async ({ page }, formValues) => {
@@ -112,9 +105,7 @@ const [Grid, gridApi] = useVbenVxeGrid({
   gridOptions,
 });
 
-const batchModalOpen = ref(false);
 const batchLoading = ref(false);
-const batchSubmitting = ref(false);
 const batchKeyword = ref('');
 const providerModels = ref<AIProviderModelResult[]>([]);
 const existingModelIds = ref<string[]>([]);
@@ -203,11 +194,6 @@ function resetBatchAddState() {
   selectedProviderModelIds.value = [];
 }
 
-function handleBatchModalCancel() {
-  batchModalOpen.value = false;
-  resetBatchAddState();
-}
-
 function handleSelectAllFiltered(checked: boolean) {
   const nextSelectedIds = new Set(selectedProviderModelIds.value);
 
@@ -250,9 +236,9 @@ async function openBatchAddModal() {
     return;
   }
 
-  batchModalOpen.value = true;
-  batchLoading.value = true;
   resetBatchAddState();
+  batchAddModalApi.open();
+  batchLoading.value = true;
 
   try {
     const [remoteProviderModels, localModels] = await Promise.all([
@@ -265,6 +251,10 @@ async function openBatchAddModal() {
   } finally {
     batchLoading.value = false;
   }
+}
+
+async function closeBatchAddModal() {
+  await batchAddModalApi.close();
 }
 
 async function submitBatchAddModels() {
@@ -287,17 +277,33 @@ async function submitBatchAddModels() {
     })),
   };
 
-  batchSubmitting.value = true;
+  batchAddModalApi.lock();
 
   try {
     await batchCreateAIModelApi(payload);
     message.success($t('ui.actionMessage.operationSuccess'));
-    handleBatchModalCancel();
+    await closeBatchAddModal();
     onRefresh();
   } finally {
-    batchSubmitting.value = false;
+    batchAddModalApi.unlock();
   }
 }
+
+const [BatchAddModal, batchAddModalApi] = useVbenModal({
+  class: 'w-[min(720px,92vw)]',
+  closeOnClickModal: false,
+  confirmText: '添加',
+  destroyOnClose: true,
+  onConfirm() {
+    void submitBatchAddModels();
+  },
+  onOpenChange(isOpen) {
+    if (!isOpen) {
+      resetBatchAddState();
+    }
+  },
+  title: '批量添加模型',
+});
 
 const [Form, formApi] = useVbenForm({
   layout: 'vertical',
@@ -326,12 +332,8 @@ const [Modal, modalApi] = useVbenModal({
     }
 
     modalApi.lock();
-    const values =
-      await formApi.getValues<Omit<AIModelParams, 'provider_id'>>();
-    const payload: AIModelParams = {
-      ...values,
-      provider_id: props.provider.id,
-    };
+    const values = await formApi.getValues<AIModelFormValues>();
+    const payload = createAIModelPayload(props.provider.id, values);
 
     try {
       await (formData.value?.id
@@ -398,16 +400,7 @@ const [Modal, modalApi] = useVbenModal({
           </VbenButton>
         </template>
       </Grid>
-      <a-modal
-        v-model:open="batchModalOpen"
-        destroy-on-close
-        :confirm-loading="batchSubmitting"
-        :mask-closable="false"
-        title="批量添加模型"
-        width="720px"
-        @cancel="handleBatchModalCancel"
-        @ok="submitBatchAddModels"
-      >
+      <BatchAddModal content-class="px-4 py-4 md:px-5 md:py-5">
         <div class="flex flex-col gap-4">
           <div class="flex flex-col gap-3 md:flex-row md:items-center">
             <a-input
@@ -430,7 +423,7 @@ const [Modal, modalApi] = useVbenModal({
           </div>
 
           <div
-            class="min-h-[320px] rounded-lg border border-border bg-background/80"
+            class="min-h-[320px] rounded-xl border border-border bg-muted/20"
           >
             <div
               v-if="batchLoading"
@@ -466,8 +459,8 @@ const [Modal, modalApi] = useVbenModal({
                     class="flex w-full items-center justify-between gap-3 rounded-lg border border-border px-3 py-2 transition-colors"
                     :class="
                       isExistingModel(item.id)
-                        ? 'bg-muted/40 opacity-70'
-                        : 'hover:border-primary/40 hover:bg-accent/30'
+                        ? 'bg-muted/35 opacity-75'
+                        : 'bg-card/70 hover:border-primary/40 hover:bg-accent/55'
                     "
                   >
                     <a-checkbox
@@ -488,7 +481,7 @@ const [Modal, modalApi] = useVbenModal({
             </a-checkbox-group>
           </div>
         </div>
-      </a-modal>
+      </BatchAddModal>
       <Modal :title="modalTitle">
         <Form />
       </Modal>

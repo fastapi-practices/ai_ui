@@ -1,32 +1,30 @@
 <script setup lang="ts">
 import type {
-  BubbleListProps,
-  ConversationsProps,
-  SenderProps,
-  SuggestionItem,
-} from '@antdv-next/x';
-
-import type { VbenFormSchema } from '#/adapter/form';
-import type {
-  AIMcpResult,
+  AIDefaultModelResult,
   AIModelResult,
-  AIProviderResult,
-  AIQuickPhraseResult,
-} from '#/plugins/ai/api';
+  AIProviderModelOptionResult,
+} from '../../api';
 import type {
+  AIChatComposerAttachment,
   AIChatComposerParams,
   AIChatConversationResult,
-} from '#/plugins/ai/api/chat';
-import type { AIChatProviderRequest } from '#/plugins/ai/runtime/chat-request';
+} from '../../api/chat';
 import type {
   AIChatProviderMessage,
   ChatMessageItem,
-} from '#/plugins/ai/runtime/message';
+} from '../../runtime/message';
+import type { AIChatProviderRequest } from '../../runtime/use-chat-stream';
+import type { AIChatFileMessageBlock } from '../../types/message';
+import type {
+  ConversationSidebarCreation,
+  ConversationSidebarItem,
+  ConversationSidebarMenu,
+} from './adapters/conversation-items';
+
+import type { VbenFormSchema } from '#/adapter/form';
 
 import {
   computed,
-  h,
-  nextTick,
   onActivated,
   onBeforeUnmount,
   onMounted,
@@ -38,158 +36,169 @@ import { ColPage, confirm, useVbenModal } from '@vben/common-ui';
 import { IconifyIcon } from '@vben/icons';
 import { usePreferences } from '@vben/preferences';
 
-import {
-  BubbleList,
-  Suggestion,
-  Welcome,
-} from '@antdv-next/x';
-import { useClipboard } from '@vueuse/core';
-import {
-  Button as AButton,
-  Empty as AEmpty,
-  Flex as AFlex,
-  Spin as ASpin,
-  message,
-  Popover,
-} from 'antdv-next';
+import { message } from 'antdv-next';
 
 import { useVbenForm } from '#/adapter/form';
-import {
-  getAllAIMcpApi,
-  getAllAIModelApi,
-  getAllAIProviderApi,
-  getAllAIQuickPhraseApi,
-} from '#/plugins/ai/api';
+import { ConversationEmptyState } from '#/plugins/ai/components/ai-elements';
+
+import { getAIModelOptionsApi } from '../../api';
 import {
   buildChatCompletionRequest,
+  buildChatRegenerateRequest,
+  stopAIChatConversationApi,
   updateAIChatConversationApi,
-  updateAIChatMessageApi,
-} from '#/plugins/ai/api/chat';
-import {
-  createAIChatProtocolDriver,
-  DEFAULT_AI_CHAT_PROTOCOL_NAME,
-} from '#/plugins/ai/protocols';
+} from '../../api/chat';
 import {
   buildTransientMessageItems,
   createProviderUserMessage,
-  getMessageFileBlocks,
   getMessageTextContent,
   makeConversationTitle,
   mergeStreamMessage,
-  parseDateLabel,
-  parseJsonField,
   replaceMessageTextBlocks,
-} from '#/plugins/ai/runtime/message';
-import { useAIChatStream } from '#/plugins/ai/runtime/use-chat-stream';
-
+} from '../../runtime/message';
+import { useAIChatStream } from '../../runtime/use-chat-stream';
 import {
   buildConversationSidebarItems,
   createConversationSidebarMenu,
 } from './adapters/conversation-items';
 import {
-  createChatBubbleListRole,
-  renderChatMessageBubbleContent,
-} from './adapters/message-bubble-role';
-import ChatSender from './components/chat-sender.vue';
-import ChatSettingsPanel from './components/chat-settings-panel.vue';
+  createChatMessageListRole,
+  hasRenderableChatMessage,
+  renderChatMessageContent,
+} from './adapters/message-rendering';
+import { ChatConversationList } from './components';
+import ChatModelSelector from './components/chat-model-selector.vue';
+import ChatPromptInput from './components/chat-prompt-input.vue';
 import ChatSidebar from './components/chat-sidebar.vue';
+import { useChatScroll } from './composables/use-chat-scroll';
 import { useChatSession } from './composables/use-chat-session';
+import { useChatSettings } from './composables/use-chat-settings';
+import { usePromptToolbar } from './composables/use-prompt-toolbar';
+import { normalizeAIModelOptions } from './model-options';
 
-type ThinkingPanelState = {
-  autoOpened: boolean;
-  expanded: boolean;
-};
-
-type ChatGenerationType = NonNullable<AIChatComposerParams['generation_type']>;
-type ChatThinkingValue = AIChatComposerParams['thinking'];
-type ChatWebSearchType = NonNullable<AIChatComposerParams['web_search']>;
-interface ChatSessionScopedConfig {
-  enableBuiltinTools: boolean;
-  generationType: ChatGenerationType;
-  modelId?: string;
-  parallelToolCalls: boolean;
-  providerId?: number;
-  selectedMcpIds: number[];
-  thinking: ChatThinkingValue;
-  webSearch: ChatWebSearchType;
-}
-
-const DEFAULT_CHAT_SESSION_SCOPED_CONFIG: Omit<
-  ChatSessionScopedConfig,
-  'modelId' | 'providerId'
-> = {
-  enableBuiltinTools: true,
-  generationType: 'text',
-  parallelToolCalls: true,
-  selectedMcpIds: [],
-  thinking: undefined,
-  webSearch: 'builtin',
-};
-
-const currentChatProtocol = createAIChatProtocolDriver(
-  DEFAULT_AI_CHAT_PROTOCOL_NAME,
-);
-const currentChatProtocolName = currentChatProtocol.name;
-const currentChatProtocolOptions = {
-  protocolName: currentChatProtocolName,
-} as const;
-
-const { copy } = useClipboard({ legacy: true });
 const { isDark } = usePreferences();
 const prompt = ref('');
+const promptDrafts = ref<Record<string, string>>({});
 const draftConversationTitle = ref('新话题');
 const selectedProviderId = ref<number>();
 const selectedModelId = ref<string>();
 const editingMessage = ref<ChatMessageItem>();
-const editingMessageIntent = ref<'resend' | 'save'>('save');
 const regeneratingMessageIndex = ref<number>();
+interface TransientPlacement {
+  insertIndex: number;
+  replaceMessageIds: string[];
+}
 
-const providers = ref<AIProviderResult[]>([]);
+const transientPlacements = ref<Record<string, TransientPlacement>>({});
+const messageListViewportVersion = ref(0);
+const messageListScrollKey = ref('draft');
+
+const providers = ref<AIProviderModelOptionResult[]>([]);
 const models = ref<AIModelResult[]>([]);
-const mcps = ref<AIMcpResult[]>([]);
-const quickPhrases = ref<AIQuickPhraseResult[]>([]);
-
-const messageContainerRef = ref<HTMLElement>();
-const autoFollowMessageScroll = ref(true);
-let suppressNextMessageScrollEvent = false;
 
 const resourcesLoading = ref(false);
-const quickPhraseLoading = ref(false);
+
+const {
+  autoFollowMessageScroll,
+  handleMessageContainerScroll,
+  isScrollRestored,
+  scrollToBottom,
+  scrollToBottomIfFollowing,
+  scrollToTop,
+  setMessageContainerRef,
+} = useChatScroll({
+  scrollKey: messageListScrollKey,
+});
+
 const {
   abort: abortTransientRequest,
-  chatProvider,
+  detachAll,
+  isConversationRequesting,
   isRequesting,
   messages: transientMessagesState,
   onRequest: onTransientRequest,
   setMessages: setTransientMessages,
+  setViewedConversationId,
   transientRequestError,
-} = useAIChatStream({
-  protocolName: currentChatProtocolOptions.protocolName,
-});
-const sending = computed(() => isRequesting.value);
+} = useAIChatStream();
+const stoppingConversationIds = ref<Set<string>>(new Set());
 
-const maxTokens = ref<number>();
-const temperature = ref(1);
-const topP = ref<number>();
-const timeout = ref<number>();
-const seed = ref<number>();
-const presencePenalty = ref<number>();
-const frequencyPenalty = ref<number>();
-const generationType = ref<ChatGenerationType>('text');
-const parallelToolCalls = ref(true);
-const thinking = ref<ChatThinkingValue>(undefined);
-const enableBuiltinTools = ref(true);
-const selectedMcpIds = ref<number[]>([]);
-const webSearch = ref<ChatWebSearchType>('builtin');
-const stopSequences = ref('');
-const extraHeaders = ref('');
-const extraBody = ref('');
-const logitBias = ref('');
-const quickPhrasePopoverOpen = ref(false);
-const conversationSessionConfigs = ref<Record<string, ChatSessionScopedConfig>>(
-  {},
-);
-const thinkingPanelStates = ref<Record<string, ThinkingPanelState>>({});
+function isConversationBusy(conversationId?: string) {
+  if (!conversationId) {
+    return isConversationRequesting(conversationId);
+  }
+  return (
+    isConversationRequesting(conversationId) ||
+    stoppingConversationIds.value.has(conversationId)
+  );
+}
+
+function getComposerDraftKey(conversationId?: string) {
+  return conversationId || 'draft';
+}
+
+function writePromptDraft(conversationId: string | undefined, value: string) {
+  const key = getComposerDraftKey(conversationId);
+  if (!value) {
+    if (!(key in promptDrafts.value)) {
+      return;
+    }
+    const nextDrafts = { ...promptDrafts.value };
+    delete nextDrafts[key];
+    promptDrafts.value = nextDrafts;
+    return;
+  }
+  promptDrafts.value = {
+    ...promptDrafts.value,
+    [key]: value,
+  };
+}
+
+function restorePromptDraft(conversationId?: string) {
+  prompt.value = promptDrafts.value[getComposerDraftKey(conversationId)] ?? '';
+}
+
+function resetComposerState(_clearPrompt = false) {
+  editingMessage.value = undefined;
+  regeneratingMessageIndex.value = undefined;
+}
+
+const stopTargetConversationId = ref('');
+
+function setConversationStopping(conversationId: string, stopping: boolean) {
+  const nextIds = new Set(stoppingConversationIds.value);
+  if (stopping) {
+    nextIds.add(conversationId);
+  } else {
+    nextIds.delete(conversationId);
+  }
+  stoppingConversationIds.value = nextIds;
+}
+
+async function stopStreaming(conversationId?: string) {
+  const targetId = conversationId || stopTargetConversationId.value;
+  if (!targetId || stoppingConversationIds.value.has(targetId)) {
+    return;
+  }
+  abortTransientRequest(targetId);
+  setConversationStopping(targetId, true);
+  try {
+    await stopAIChatConversationApi(targetId);
+  } finally {
+    setConversationStopping(targetId, false);
+  }
+}
+
+function handleStopStreaming() {
+  void stopStreaming().catch((error) => {
+    message.error((error as Error).message);
+  });
+}
+
+function resetMessageListViewport() {
+  messageListViewportVersion.value += 1;
+}
+
 const renameConversationFormData = ref<AIChatConversationResult>();
 const {
   activeConversation,
@@ -197,13 +206,11 @@ const {
   activeConversationDetail,
   activeMessages,
   conversationSummaries,
-  confirmClearConversationContext,
   confirmClearMessages,
   confirmRemoveConversation,
   createNewConversation,
   deleteMessageChain,
   detailLoading,
-  fetchConversations,
   hasMoreConversations,
   initializeSession,
   loadConversationDetail,
@@ -212,6 +219,7 @@ const {
   setActiveConversationKey,
   sidebarLoading,
   sidebarMoreLoading,
+  syncConversationDetailMetadata,
   togglePinConversation,
   upsertConversationSummary,
 } = useChatSession({
@@ -222,9 +230,10 @@ const {
   notifySuccess: (content) => {
     message.success(content);
   },
-  protocolName: currentChatProtocolOptions.protocolName,
   renameConversationFormData,
+  isConversationRequesting: isConversationBusy,
   resetComposerState,
+  resetMessageListViewport,
   clearTransientMessages: () => {
     setTransientMessages([]);
   },
@@ -234,6 +243,76 @@ const {
   selectedProviderId,
   stopStreaming,
   transientRequestError,
+});
+
+const sending = computed(
+  () =>
+    isRequesting.value ||
+    stoppingConversationIds.value.has(activeConversationId.value),
+);
+
+watch(
+  activeConversationId,
+  (conversationId, previousId) => {
+    if (previousId !== undefined && previousId !== conversationId) {
+      writePromptDraft(previousId, prompt.value);
+    }
+    restorePromptDraft(conversationId);
+    messageListScrollKey.value = conversationId || 'draft';
+    stopTargetConversationId.value = conversationId;
+    setViewedConversationId(conversationId);
+  },
+  { immediate: true, flush: 'sync' },
+);
+
+const activeTransientPlacement = computed(
+  () => transientPlacements.value[activeConversationId.value],
+);
+
+function setTransientPlacement(
+  conversationId: string,
+  placement?: TransientPlacement,
+) {
+  const nextPlacements = { ...transientPlacements.value };
+  if (placement) {
+    nextPlacements[conversationId] = placement;
+  } else {
+    transientPlacements.value = Object.fromEntries(
+      Object.entries(nextPlacements).filter(([key]) => key !== conversationId),
+    );
+    return;
+  }
+  transientPlacements.value = nextPlacements;
+}
+
+let generatingPollTimer: ReturnType<typeof setInterval> | undefined;
+
+watch([activeConversationId, activeConversationDetail, sending], () => {
+  if (generatingPollTimer) {
+    clearInterval(generatingPollTimer);
+    generatingPollTimer = undefined;
+  }
+  const conversationId = activeConversationId.value;
+  if (
+    !conversationId ||
+    isConversationBusy(conversationId) ||
+    !activeConversationDetail.value?.is_generating
+  ) {
+    return;
+  }
+  generatingPollTimer = setInterval(() => {
+    void loadConversationDetail(conversationId, {
+      scrollToBottom: false,
+      showLoading: false,
+    });
+  }, 2000);
+});
+
+const { rememberConversationSessionConfig } = useChatSettings({
+  activeConversationDetail,
+  activeConversationId,
+  selectedModelId,
+  selectedProviderId,
 });
 
 const renameConversationSchema: VbenFormSchema[] = [
@@ -249,411 +328,91 @@ const renameConversationSchema: VbenFormSchema[] = [
   },
 ];
 
-const GENERATION_TYPE_OPTIONS: Array<{
-  desc: string;
-  label: string;
-  value: ChatGenerationType;
-}> = [
-  {
-    desc: '常规对话与文本生成',
-    label: '文本',
-    value: 'text',
-  },
-  {
-    desc: '让模型直接生成图片结果',
-    label: '图片',
-    value: 'image',
-  },
-];
-
-const WEB_SEARCH_OPTIONS: Array<{
-  desc: string;
-  label: string;
-  value: ChatWebSearchType;
-}> = [
-  {
-    desc: '优先使用模型内置搜索能力',
-    label: '内置搜索',
-    value: 'builtin',
-  },
-  {
-    desc: '使用 Exa 作为搜索来源',
-    label: 'Exa',
-    value: 'exa',
-  },
-  {
-    desc: '使用 Tavily 作为搜索来源',
-    label: 'Tavily',
-    value: 'tavily',
-  },
-  {
-    desc: '使用 DuckDuckGo 作为搜索来源',
-    label: 'DuckDuckGo',
-    value: 'duckduckgo',
-  },
-];
-
-const THINKING_OPTIONS: Array<{
-  desc: string;
-  key: string;
-  label: string;
-  value: ChatThinkingValue;
-}> = [
-  {
-    desc: '沿用模型默认思考行为',
-    key: 'default',
-    label: '默认',
-    value: undefined,
-  },
-  {
-    desc: '显式关闭思考',
-    key: 'off',
-    label: '关闭',
-    value: false,
-  },
-  {
-    desc: '最轻量的思考强度',
-    key: 'minimal',
-    label: 'minimal',
-    value: 'minimal',
-  },
-  {
-    desc: '较低思考强度',
-    key: 'low',
-    label: 'low',
-    value: 'low',
-  },
-  {
-    desc: '平衡型思考强度',
-    key: 'medium',
-    label: 'medium',
-    value: 'medium',
-  },
-  {
-    desc: '较高思考强度',
-    key: 'high',
-    label: 'high',
-    value: 'high',
-  },
-  {
-    desc: '最高思考强度',
-    key: 'xhigh',
-    label: 'xhigh',
-    value: 'xhigh',
-  },
-];
-
-let currentModelFetchId = 0;
 let hasInitialized = false;
 
-function isMessageContainerNearBottom(threshold = 48) {
-  const container = messageContainerRef.value;
-  if (!container) {
-    return true;
-  }
-
-  return (
-    container.scrollHeight - container.scrollTop - container.clientHeight <=
-    threshold
-  );
-}
-
-function syncAutoFollowMessageScroll() {
-  autoFollowMessageScroll.value = isMessageContainerNearBottom();
-}
-
-function handleMessageContainerScroll() {
-  if (suppressNextMessageScrollEvent) {
-    suppressNextMessageScrollEvent = false;
-    return;
-  }
-
-  syncAutoFollowMessageScroll();
-}
-
-function scrollToBottom(force = false) {
-  nextTick(() => {
-    const container = messageContainerRef.value;
-    if (!container || (!force && !autoFollowMessageScroll.value)) {
-      return;
-    }
-
-    const syncScroll = () => {
-      suppressNextMessageScrollEvent = true;
-      container.scrollTop = container.scrollHeight;
-    };
-
-    syncScroll();
-    requestAnimationFrame(() => {
-      syncScroll();
-      requestAnimationFrame(syncScroll);
-    });
-  });
-}
-
-function scrollToTop() {
-  nextTick(() => {
-    suppressNextMessageScrollEvent = true;
-    messageContainerRef.value?.scrollTo({ top: 0 });
-  });
-}
-
-function getThinkingPanelKey(message: ChatMessageItem) {
-  return message.id;
-}
-
-function getThinkingContent(message: ChatMessageItem) {
-  return getMessageTextContent(message, 'reasoning');
-}
-
-function hasThinkingContent(message: ChatMessageItem) {
-  return Boolean(getThinkingContent(message).trim());
-}
-
-function isThinkingExpanded(message: ChatMessageItem) {
-  return Boolean(
-    thinkingPanelStates.value[getThinkingPanelKey(message)]?.expanded,
-  );
-}
-
-function setThinkingExpanded(message: ChatMessageItem, expanded: boolean) {
-  const key = getThinkingPanelKey(message);
-  const current = thinkingPanelStates.value[key];
-  thinkingPanelStates.value = {
-    ...thinkingPanelStates.value,
-    [key]: {
-      autoOpened: current?.autoOpened ?? false,
-      expanded,
-    },
-  };
-}
-
-function resetGenerationSettings() {
-  maxTokens.value = undefined;
-  temperature.value = 1;
-  topP.value = undefined;
-  timeout.value = undefined;
-}
-
-function resetBehaviorSettings() {
-  seed.value = undefined;
-  presencePenalty.value = undefined;
-  frequencyPenalty.value = undefined;
-}
-
-function resetToolingSettings() {
-  parallelToolCalls.value = true;
-  enableBuiltinTools.value = true;
-}
-
-function resetPassthroughSettings() {
-  stopSequences.value = '';
-  extraHeaders.value = '';
-  extraBody.value = '';
-  logitBias.value = '';
-}
-
-function resetModelSettings() {
-  resetGenerationSettings();
-  resetBehaviorSettings();
-  resetToolingSettings();
-  resetPassthroughSettings();
-}
-
-function buildCurrentChatSessionScopedConfig(): ChatSessionScopedConfig {
-  return {
-    enableBuiltinTools: enableBuiltinTools.value,
-    generationType: generationType.value,
-    modelId: selectedModelId.value,
-    parallelToolCalls: parallelToolCalls.value,
-    providerId: selectedProviderId.value,
-    selectedMcpIds: [...selectedMcpIds.value],
-    thinking: thinking.value,
-    webSearch: webSearch.value,
-  };
-}
-
-function applyChatSessionScopedConfig(
-  config: Partial<ChatSessionScopedConfig>,
-  options: { preserveProviderModel?: boolean } = {},
+function applyAssistantDefaultModel(
+  defaultModel?: AIDefaultModelResult | null,
 ) {
-  if (!options.preserveProviderModel) {
-    selectedProviderId.value = config.providerId;
-    selectedModelId.value = config.modelId;
+  if (selectedProviderId.value && selectedModelId.value) {
+    return;
   }
 
-  generationType.value =
-    config.generationType ?? DEFAULT_CHAT_SESSION_SCOPED_CONFIG.generationType;
-  parallelToolCalls.value =
-    config.parallelToolCalls ??
-    DEFAULT_CHAT_SESSION_SCOPED_CONFIG.parallelToolCalls;
-  thinking.value =
-    config.thinking ?? DEFAULT_CHAT_SESSION_SCOPED_CONFIG.thinking;
-  enableBuiltinTools.value =
-    config.enableBuiltinTools ??
-    DEFAULT_CHAT_SESSION_SCOPED_CONFIG.enableBuiltinTools;
-  selectedMcpIds.value = [...(config.selectedMcpIds ?? [])];
-  webSearch.value =
-    config.webSearch ?? DEFAULT_CHAT_SESSION_SCOPED_CONFIG.webSearch;
+  if (!defaultModel || Number(defaultModel.status) !== 1) {
+    return;
+  }
+
+  selectedProviderId.value = defaultModel.provider_id;
+  selectedModelId.value = defaultModel.model_id;
 }
 
-function rememberConversationSessionConfig(conversationId?: null | string) {
-  if (!conversationId) {
-    return;
-  }
-
-  conversationSessionConfigs.value = {
-    ...conversationSessionConfigs.value,
-    [conversationId]: buildCurrentChatSessionScopedConfig(),
-  };
+function selectedModelExists(data: AIModelResult[]) {
+  return data.some(
+    (item) =>
+      item.provider_id === selectedProviderId.value &&
+      item.model_id === selectedModelId.value,
+  );
 }
 
-function resetComposerState(clearPrompt = false) {
-  editingMessage.value = undefined;
-  regeneratingMessageIndex.value = undefined;
-  if (clearPrompt) {
-    prompt.value = '';
-  }
-}
-
-function stopStreaming() {
-  abortTransientRequest();
-}
-
-watch(activeConversationId, (conversationId, previousConversationId) => {
-  if (previousConversationId) {
-    rememberConversationSessionConfig(previousConversationId);
-  }
-
-  if (!conversationId) {
-    applyChatSessionScopedConfig(DEFAULT_CHAT_SESSION_SCOPED_CONFIG, {
-      preserveProviderModel: true,
-    });
-    return;
-  }
-
-  const config = conversationSessionConfigs.value[conversationId];
-  if (!config) {
-    applyChatSessionScopedConfig(DEFAULT_CHAT_SESSION_SCOPED_CONFIG, {
-      preserveProviderModel: true,
-    });
-    return;
-  }
-
-  applyChatSessionScopedConfig(config);
-});
-
-watch(activeConversationDetail, (detail) => {
-  if (!detail) {
-    return;
-  }
-
-  const config = conversationSessionConfigs.value[detail.conversation_id];
-  if (!config) {
-    return;
-  }
-
-  applyChatSessionScopedConfig(config);
-});
-
-async function fetchProviders() {
+async function refreshChatResources() {
   resourcesLoading.value = true;
   try {
-    providers.value = await getAllAIProviderApi();
+    const data = normalizeAIModelOptions(await getAIModelOptionsApi());
+
+    providers.value = data.providers;
+    models.value = data.models;
+
+    if (selectedModelId.value && !selectedModelExists(data.models)) {
+      selectedProviderId.value = undefined;
+      selectedModelId.value = undefined;
+    }
+
+    applyAssistantDefaultModel(data.defaultModel);
+  } catch (error) {
+    message.error((error as Error).message);
   } finally {
     resourcesLoading.value = false;
   }
 }
 
-async function fetchMcps() {
-  mcps.value = await getAllAIMcpApi();
+function handleModelSelectorModelSelect(model: AIModelResult) {
+  selectedProviderId.value = model.provider_id;
+  selectedModelId.value = model.model_id;
 }
 
-function isMcpSelected(mcpId: number) {
-  return selectedMcpIds.value.includes(mcpId);
-}
-
-function toggleMcpSelection(mcpId: number) {
-  if (isMcpSelected(mcpId)) {
-    selectedMcpIds.value = selectedMcpIds.value.filter((id) => id !== mcpId);
-    return;
-  }
-
-  selectedMcpIds.value = [...selectedMcpIds.value, mcpId];
-}
-
-async function handleQuickPhrasePopoverOpenChange(open: boolean) {
-  quickPhrasePopoverOpen.value = open;
-}
-
-async function fetchModelsByProvider(providerId?: number) {
-  const fetchId = ++currentModelFetchId;
-
-  if (!providerId) {
-    models.value = [];
-    if (!activeConversationId.value) {
-      selectedModelId.value = undefined;
+function getLastUserMessage() {
+  for (let index = activeMessages.value.length - 1; index >= 0; index -= 1) {
+    const item = activeMessages.value[index];
+    if (
+      item?.role === 'user' &&
+      item.message_id !== undefined &&
+      item.message_id !== null
+    ) {
+      return item;
     }
-    return;
   }
-
-  const data = await getAllAIModelApi({ provider_id: providerId });
-
-  if (fetchId !== currentModelFetchId) {
-    return;
-  }
-
-  models.value = data;
-
-  if (!data.some((item) => item.model_id === selectedModelId.value)) {
-    selectedModelId.value = undefined;
-  }
+  return undefined;
 }
 
-async function fetchQuickPhrases() {
-  quickPhraseLoading.value = true;
-  try {
-    quickPhrases.value = await getAllAIQuickPhraseApi();
-  } finally {
-    quickPhraseLoading.value = false;
-  }
+function canResendLastUserMessage(item: ChatMessageItem) {
+  const lastUserMessage = getLastUserMessage();
+  return (
+    !sending.value &&
+    lastUserMessage !== undefined &&
+    item.id === lastUserMessage.id
+  );
 }
 
-async function refreshChatResources() {
-  await Promise.all([
-    fetchProviders(),
-    fetchModelsByProvider(selectedProviderId.value),
-    fetchMcps(),
-    fetchQuickPhrases(),
-  ]);
-}
-
-function appendQuickPhrase(item: AIQuickPhraseResult) {
-  prompt.value = prompt.value.trim()
-    ? `${prompt.value.trim()}\n${item.content}`
-    : item.content;
-}
-
-function beginEditMessage(
-  item: ChatMessageItem,
-  intent: 'resend' | 'save' = 'save',
-) {
-  if (
-    item.role !== 'user' ||
-    item.message_id === undefined ||
-    item.message_id === null
-  ) {
+function beginEditMessage(item: ChatMessageItem) {
+  if (!canResendLastUserMessage(item)) {
     return;
   }
 
   editingMessage.value = item;
-  editingMessageIntent.value = intent;
   regeneratingMessageIndex.value = undefined;
 }
 
 function cancelEditMessage() {
   editingMessage.value = undefined;
-  editingMessageIntent.value = 'save';
 }
 
 function isEditingMessage(item: ChatMessageItem) {
@@ -666,35 +425,84 @@ function updateMessageContent(target: ChatMessageItem, content: string) {
   );
 }
 
-async function saveEditedMessage(content: string) {
-  const trimmedContent = content.trim();
-  const targetMessage = editingMessage.value;
+function findActiveMessageIndex(target: {
+  id?: string;
+  message_id?: null | number;
+  message_index?: number;
+  role?: ChatMessageItem['role'];
+}) {
+  return activeMessages.value.findIndex((item) => {
+    if (target.id && item.id === target.id) {
+      return true;
+    }
+
+    if (
+      target.message_id !== undefined &&
+      target.message_id !== null &&
+      item.message_id === target.message_id
+    ) {
+      return true;
+    }
+
+    return (
+      target.message_index !== undefined &&
+      item.message_index === target.message_index &&
+      (!target.role || item.role === target.role)
+    );
+  });
+}
+
+function getImmediateAssistantResponseRange(userIndex: number) {
+  const startIndex = Math.max(0, userIndex + 1);
+  let endIndex = startIndex;
+
+  while (endIndex < activeMessages.value.length) {
+    const item = activeMessages.value[endIndex];
+    if (!item || item.role === 'user') {
+      break;
+    }
+    endIndex += 1;
+  }
+
+  return {
+    insertIndex: startIndex,
+    replaceMessageIds: activeMessages.value
+      .slice(startIndex, endIndex)
+      .filter((item) => item.role === 'assistant')
+      .map((item) => item.id),
+  };
+}
+
+function resolveTransientPlacement(params: {
+  editingMessageId?: null | number;
+  editingMessageIndex?: number;
+  regenerateMessageId?: number;
+  regenerateTargetMessageIndex?: number;
+}) {
+  if (params.regenerateMessageId !== undefined) {
+    const userIndex = findActiveMessageIndex({
+      message_id: params.regenerateMessageId,
+      message_index: params.regenerateTargetMessageIndex,
+      role: 'user',
+    });
+    return userIndex === -1
+      ? undefined
+      : getImmediateAssistantResponseRange(userIndex);
+  }
 
   if (
-    !targetMessage ||
-    !targetMessage.conversation_id ||
-    targetMessage.message_id === undefined ||
-    targetMessage.message_id === null
+    params.editingMessageId !== undefined &&
+    params.editingMessageId !== null
   ) {
-    return;
+    const userIndex = findActiveMessageIndex({
+      message_id: params.editingMessageId,
+      message_index: params.editingMessageIndex,
+      role: 'user',
+    });
+    return userIndex === -1
+      ? undefined
+      : getImmediateAssistantResponseRange(userIndex);
   }
-
-  if (!trimmedContent) {
-    message.warning('请输入消息内容');
-    return;
-  }
-
-  await updateAIChatMessageApi(
-    targetMessage.conversation_id,
-    targetMessage.message_id,
-    {
-      content: trimmedContent,
-    },
-  );
-  updateMessageContent(targetMessage, trimmedContent);
-  cancelEditMessage();
-  await loadConversationDetail(targetMessage.conversation_id);
-  message.success('消息内容已保存');
 }
 
 async function resendEditedMessage(content: string) {
@@ -704,7 +512,8 @@ async function resendEditedMessage(content: string) {
   if (
     !targetMessage ||
     targetMessage.message_id === undefined ||
-    targetMessage.message_id === null
+    targetMessage.message_id === null ||
+    !canResendLastUserMessage(targetMessage)
   ) {
     return;
   }
@@ -715,49 +524,14 @@ async function resendEditedMessage(content: string) {
   }
 
   updateMessageContent(targetMessage, trimmedContent);
-  if (targetMessage.conversation_id) {
-    await updateAIChatMessageApi(
-      targetMessage.conversation_id,
-      targetMessage.message_id,
-      {
-        content: trimmedContent,
-      },
-    );
-  }
   regeneratingMessageIndex.value = targetMessage.message_index;
   editingMessage.value = undefined;
-  await submitChat(targetMessage.message_id, true, undefined, 'user');
+  await submitChat(targetMessage.message_id, true, trimmedContent);
 }
 
-async function regenerateUserMessage(item: ChatMessageItem) {
-  if (
-    item.role !== 'user' ||
-    item.message_id === undefined ||
-    item.message_id === null
-  ) {
-    return;
-  }
-
-  editingMessage.value = undefined;
-  editingMessageIntent.value = 'save';
-  regeneratingMessageIndex.value = item.message_index;
-  await submitChat(item.message_id, true, undefined, 'user');
-}
-
-async function copyMessageContent(item: ChatMessageItem) {
-  const sections = [
-    getMessageTextContent(item, 'text'),
-    getMessageTextContent(item, 'reasoning'),
-    ...getMessageFileBlocks(item).map((block) =>
-      [block.name, block.url].filter(Boolean).join(' - '),
-    ),
-  ].filter(Boolean);
-
-  await copy(sections.join('\n\n'));
-  message.success('消息内容已复制');
-}
-
-async function startRenameConversation(conversation?: AIChatConversationResult) {
+async function startRenameConversation(
+  conversation?: AIChatConversationResult,
+) {
   const targetConversation = conversation || activeConversation.value;
   if (!targetConversation) {
     return;
@@ -813,47 +587,54 @@ async function submitRenameConversation() {
   }
 }
 
-async function regenerateMessage(item: ChatMessageItem) {
-  if (
-    item.role !== 'assistant' ||
-    item.message_id === undefined ||
-    item.message_id === null
-  ) {
-    return;
-  }
-
-  regeneratingMessageIndex.value = item.message_index;
-  editingMessage.value = undefined;
-  await submitChat(item.message_id, false, undefined, 'model');
+function createLocalAttachmentBlocks(
+  attachments: AIChatComposerAttachment[],
+): AIChatFileMessageBlock[] {
+  return attachments.map((attachment) => {
+    const mimeType = attachment.mime_type || 'application/octet-stream';
+    return {
+      file_type: attachment.file_type ?? null,
+      mime_type: mimeType,
+      name: attachment.name ?? null,
+      source_type: attachment.source_type ?? null,
+      type: 'file',
+      url:
+        attachment.url ??
+        (attachment.data ? `data:${mimeType};base64,${attachment.data}` : null),
+    };
+  });
 }
 
 async function submitChat(
   regenerateMessageId?: number,
   notifyInvalid = false,
   overridePromptText?: string,
-  regenerateSource: 'model' | 'user' = 'model',
+  attachments: AIChatComposerAttachment[] = [],
 ) {
-  if (sending.value) {
-    return;
+  if (isConversationBusy(activeConversationId.value)) {
+    return false;
   }
 
   if (!selectedProviderId.value || !selectedModelId.value) {
     if (notifyInvalid) {
       message.warning('请选择供应商和模型');
     }
-    return;
+    return false;
   }
 
   const promptText =
     regenerateMessageId === undefined
       ? (overridePromptText ?? prompt.value).trim()
       : undefined;
+  const submittedAttachments =
+    regenerateMessageId === undefined ? attachments : [];
+  const hasInput = Boolean(promptText) || submittedAttachments.length > 0;
 
-  if (regenerateMessageId === undefined && !promptText) {
+  if (regenerateMessageId === undefined && !hasInput) {
     if (notifyInvalid) {
       message.warning('请输入消息内容');
     }
-    return;
+    return false;
   }
 
   const editingMessageIndex = editingMessage.value?.message_index;
@@ -864,216 +645,170 @@ async function submitChat(
 
   if (editingMessage.value && !hasEditingMessageId) {
     message.warning('当前消息暂不可编辑，请刷新后重试');
-    return;
+    return false;
   }
   let chatMode: AIChatComposerParams['mode'] = 'regenerate';
   if (regenerateMessageId === undefined) {
     chatMode = hasEditingMessageId ? 'edit' : 'create';
   }
-  const submittedTitle =
-    activeConversationId.value || !promptText
-      ? draftConversationTitle.value
-      : makeConversationTitle(promptText);
+  const submittedTitle = activeConversationId.value
+    ? draftConversationTitle.value
+    : makeConversationTitle(
+        promptText || submittedAttachments[0]?.name || '附件消息',
+      );
 
   let payload: AIChatComposerParams;
   try {
     payload = {
       conversation_id: activeConversationId.value,
-      extra_body: extraBody.value.trim() || undefined,
-      enable_builtin_tools: enableBuiltinTools.value,
-      extra_headers: parseJsonField<Record<string, string>>(
-        extraHeaders.value,
-        '额外请求头',
-        (value) =>
-          value !== null && typeof value === 'object' && !Array.isArray(value),
-      ),
-      frequency_penalty: frequencyPenalty.value,
-      logit_bias: parseJsonField<Record<string, number>>(
-        logitBias.value,
-        'Logit Bias',
-        (value) =>
-          value !== null && typeof value === 'object' && !Array.isArray(value),
-      ),
-      max_tokens: maxTokens.value,
-      mcp_ids:
-        selectedMcpIds.value.length > 0 ? selectedMcpIds.value : undefined,
-      generation_type: generationType.value,
       model_id: selectedModelId.value,
-      parallel_tool_calls: parallelToolCalls.value,
-      presence_penalty: presencePenalty.value,
       provider_id: selectedProviderId.value,
       mode: chatMode,
-      thinking: thinking.value,
-      seed: seed.value,
-      stop_sequences: parseJsonField<string[]>(
-        stopSequences.value,
-        '停止序列',
-        Array.isArray,
-      ),
-      temperature: temperature.value,
-      timeout: timeout.value,
-      top_p: topP.value,
-      web_search: webSearch.value,
       ...(chatMode === 'edit' && hasEditingMessageId
         ? {
             edit_message_id: editingMessageId,
-            user_prompt: submittedPromptText,
           }
         : {}),
-      ...(chatMode === 'create' ? { user_prompt: submittedPromptText } : {}),
       ...(chatMode === 'regenerate' && regenerateMessageId !== undefined
         ? { regenerate_message_id: regenerateMessageId }
         : {}),
     };
   } catch (error) {
     message.error((error as Error).message);
-    return;
+    return false;
   }
 
-  const targetConversationId = activeConversationId.value;
-  if (regenerateMessageId !== undefined && !targetConversationId) {
-    message.warning('当前会话不存在，无法重新生成');
-    return;
-  }
-  const regenerateTargetMessageIndex = regeneratingMessageIndex.value;
-
-  if (
-    regenerateMessageId !== undefined &&
-    regenerateTargetMessageIndex !== undefined
-  ) {
-    if (regenerateSource === 'user') {
-      activeMessages.value = activeMessages.value.filter(
-        (item) => item.message_index <= regenerateTargetMessageIndex,
-      );
-    } else {
-      const regenerateTargetArrayIndex = activeMessages.value.findIndex(
-        (item) =>
-          item.role === 'assistant' &&
-          item.message_index === regenerateTargetMessageIndex,
-      );
-      const preservedUserArrayIndex =
-        regenerateTargetArrayIndex <= 0
-          ? -1
-          : ([...activeMessages.value.keys()]
-              .slice(0, regenerateTargetArrayIndex)
-              .toReversed()
-              .find((index) => activeMessages.value[index]?.role === 'user') ??
-            -1);
-
-      activeMessages.value =
-        preservedUserArrayIndex >= 0
-          ? activeMessages.value.slice(0, preservedUserArrayIndex + 1)
-          : [];
-    }
-  } else if (editingMessageIndex !== undefined) {
-    activeMessages.value = activeMessages.value.filter(
-      (item) => item.message_index < editingMessageIndex,
-    );
-  }
-
-  if (!activeConversationId.value) {
+  const sourceConversationId = activeConversationId.value;
+  const targetConversationId =
+    sourceConversationId || crypto.randomUUID();
+  const existingSummary = conversationSummaries.value.find(
+    (item) => item.conversation_id === targetConversationId,
+  );
+  if (!sourceConversationId) {
+    setActiveConversationKey(targetConversationId);
     draftConversationTitle.value = submittedTitle;
   }
-  autoFollowMessageScroll.value = true;
-  const completionRequest = buildChatCompletionRequest({
-    conversationId: targetConversationId,
-    history: activeMessages.value,
-    params: payload,
-    promptText:
-      regenerateMessageId === undefined ? submittedPromptText : undefined,
-  }, {
-    protocolName: currentChatProtocolOptions.protocolName,
+  upsertConversationSummary({
+    conversation_id: targetConversationId,
+    created_time: existingSummary?.created_time ?? new Date().toISOString(),
+    id: existingSummary?.id ?? Date.now(),
+    is_generating: true,
+    is_pinned: existingSummary?.is_pinned ?? false,
+    title: existingSummary?.title || submittedTitle,
+    updated_time: new Date().toISOString(),
+  });
+  if (regenerateMessageId !== undefined && !targetConversationId) {
+    message.warning('当前会话不存在，无法重新生成');
+    return false;
+  }
+  const regenerateTargetMessageIndex = regeneratingMessageIndex.value;
+  const nextTransientPlacement = resolveTransientPlacement({
+    editingMessageId,
+    editingMessageIndex,
+    regenerateMessageId,
+    regenerateTargetMessageIndex,
   });
 
+  autoFollowMessageScroll.value = true;
   transientRequestError.value = null;
+  setTransientPlacement(targetConversationId, nextTransientPlacement);
   setTransientMessages([]);
 
-  if (regenerateMessageId === undefined || regenerateSource === 'user') {
+  if (regenerateMessageId === undefined) {
+    writePromptDraft(sourceConversationId, '');
     prompt.value = '';
   }
 
   const requestParams: AIChatProviderRequest =
     regenerateMessageId === undefined
       ? {
-          body: completionRequest,
-          localMessages: submittedPromptText
-            ? [createProviderUserMessage(submittedPromptText)]
+          body: buildChatCompletionRequest({
+            attachments: submittedAttachments,
+            conversationId: targetConversationId,
+            params: payload,
+            promptText: submittedPromptText,
+          }),
+          conversationId: targetConversationId,
+          localMessages: hasInput
+            ? [
+                createProviderUserMessage(
+                  submittedPromptText,
+                  undefined,
+                  createLocalAttachmentBlocks(submittedAttachments),
+                ),
+              ]
             : [],
           mode: 'create',
         }
       : {
-          body: {
-            conversationId:
-              completionRequest.conversationId ?? targetConversationId,
-            forwardedProps: completionRequest.forwardedProps,
-          },
+          body: buildChatRegenerateRequest({
+            content: overridePromptText,
+            conversationId: targetConversationId,
+            params: payload,
+          }),
           conversationId: targetConversationId,
           localMessages: [],
           messageId: regenerateMessageId,
-          mode:
-            regenerateSource === 'user'
-              ? 'regenerate-from-message'
-              : 'regenerate-from-response',
+          mode: 'regenerate-from-message',
         };
 
-  onTransientRequest(requestParams);
-  await chatProvider.request.asyncHandler;
+  void finalizeChatRequest({
+    editingMessageIndex,
+    regenerateMessageId,
+    requestConversationId: targetConversationId,
+    requestPromise: onTransientRequest(requestParams),
+    submittedPromptText,
+  });
+  return true;
+}
 
-  let streamedConversationId = targetConversationId;
-  for (
-    let index = transientMessagesState.value.length - 1;
-    index >= 0;
-    index -= 1
-  ) {
-    const conversationId =
-      transientMessagesState.value[index]?.message.conversation_id;
-    if (conversationId) {
-      streamedConversationId = conversationId;
-      break;
-    }
-  }
-
-  const requestError = transientRequestError.value;
+async function finalizeChatRequest(params: {
+  editingMessageIndex?: number;
+  regenerateMessageId?: number;
+  requestConversationId: string;
+  requestPromise: Promise<'completed' | 'detached' | 'failed' | 'ignored'>;
+  submittedPromptText: string;
+}) {
+  const requestOutcome = await params.requestPromise;
+  const stillViewing =
+    activeConversationId.value === params.requestConversationId;
+  const requestError = stillViewing ? transientRequestError.value : null;
 
   if (requestError) {
     message.error(requestError);
-
     if (
-      regenerateMessageId === undefined &&
-      editingMessageIndex === undefined &&
-      !activeConversationId.value
+      params.regenerateMessageId === undefined &&
+      params.editingMessageIndex === undefined
     ) {
-      prompt.value = submittedPromptText;
+      writePromptDraft(params.requestConversationId, params.submittedPromptText);
+      if (stillViewing) {
+        prompt.value = params.submittedPromptText;
+      }
     }
-
-    if (streamedConversationId) {
-      rememberConversationSessionConfig(streamedConversationId);
-      setActiveConversationKey(streamedConversationId);
-      await fetchConversations(false);
-      await loadConversationDetail(streamedConversationId);
-    }
-
-    setTransientMessages([]);
-  } else {
-    await fetchConversations(false);
-
-    if (streamedConversationId) {
-      rememberConversationSessionConfig(streamedConversationId);
-      setActiveConversationKey(streamedConversationId);
-      await loadConversationDetail(streamedConversationId);
-    } else if (conversationSummaries.value[0]) {
-      setActiveConversationKey(conversationSummaries.value[0].conversation_id);
-      await loadConversationDetail(
-        conversationSummaries.value[0].conversation_id,
-      );
-    }
-
-    setTransientMessages([]);
   }
 
-  editingMessage.value = undefined;
-  editingMessageIntent.value = 'save';
-  regeneratingMessageIndex.value = undefined;
+  rememberConversationSessionConfig(params.requestConversationId);
+  const currentSummary = conversationSummaries.value.find(
+    (item) => item.conversation_id === params.requestConversationId,
+  );
+  if (currentSummary) {
+    upsertConversationSummary({
+      ...currentSummary,
+      is_generating: isConversationBusy(params.requestConversationId),
+    });
+  }
+  if (stillViewing) {
+    if (requestOutcome === 'completed' && !requestError) {
+      commitSuccessfulTransientMessages();
+    }
+    setTransientMessages([]);
+    await syncCompletedConversationMetadata(params.requestConversationId);
+    editingMessage.value = undefined;
+    regeneratingMessageIndex.value = undefined;
+  } else {
+    void syncCompletedConversationMetadata(params.requestConversationId);
+  }
+  setTransientPlacement(params.requestConversationId, undefined);
 }
 
 const transientMessages = computed<ChatMessageItem[]>(() => {
@@ -1110,12 +845,125 @@ const transientMessages = computed<ChatMessageItem[]>(() => {
   });
 });
 
+function shouldRenderChatMessage(message: ChatMessageItem) {
+  if (message.message_type === 'error') {
+    return Boolean(getMessageTextContent(message, 'text').trim());
+  }
+
+  if (message.role === 'assistant' && message.streaming) {
+    return true;
+  }
+
+  return hasRenderableChatMessage(message);
+}
+
+function commitSuccessfulTransientMessages() {
+  const committedMessages = transientMessages.value
+    .filter((message) => shouldRenderChatMessage(message))
+    .map((message) => ({
+      ...message,
+      streaming: false,
+    }));
+
+  if (committedMessages.length === 0) {
+    return;
+  }
+
+  const placement = activeTransientPlacement.value;
+  if (!placement) {
+    activeMessages.value = [...activeMessages.value, ...committedMessages];
+    return;
+  }
+
+  const replaceMessageIds = new Set(placement.replaceMessageIds);
+  const nextMessages: ChatMessageItem[] = [];
+  let hasInserted = false;
+
+  activeMessages.value.forEach((message, index) => {
+    if (!hasInserted && index === placement.insertIndex) {
+      nextMessages.push(...committedMessages);
+      hasInserted = true;
+    }
+
+    if (!replaceMessageIds.has(message.id)) {
+      nextMessages.push(message);
+    }
+  });
+
+  if (!hasInserted) {
+    nextMessages.push(...committedMessages);
+  }
+
+  activeMessages.value = nextMessages;
+}
+
+async function syncCompletedConversationMetadata(conversationId: string) {
+  try {
+    await syncConversationDetailMetadata(conversationId);
+  } catch {
+    return undefined;
+  }
+}
+
 const displayMessages = computed<ChatMessageItem[]>(() => {
-  return [...activeMessages.value, ...transientMessages.value];
+  const renderableTransientMessages = transientMessages.value.filter(
+    (message) => shouldRenderChatMessage(message),
+  );
+  const placement = activeTransientPlacement.value;
+
+  if (!placement || renderableTransientMessages.length === 0) {
+    return [...activeMessages.value, ...renderableTransientMessages].filter(
+      (message) => shouldRenderChatMessage(message),
+    );
+  }
+
+  const replaceMessageIds = new Set(placement.replaceMessageIds);
+  const messages: ChatMessageItem[] = [];
+  let hasInserted = false;
+
+  activeMessages.value.forEach((message, index) => {
+    if (!hasInserted && index === placement.insertIndex) {
+      messages.push(...renderableTransientMessages);
+      hasInserted = true;
+    }
+
+    if (!replaceMessageIds.has(message.id)) {
+      messages.push(message);
+    }
+  });
+
+  if (!hasInserted) {
+    messages.push(...renderableTransientMessages);
+  }
+
+  return messages.filter((message) => shouldRenderChatMessage(message));
 });
 
-const bubbleListItems = computed(() => {
-  const items: BubbleListProps['items'] = [];
+const messageListRestoring = computed(
+  () => displayMessages.value.length > 0 && !isScrollRestored.value,
+);
+const messageAreaLoading = computed(
+  () => detailLoading.value && displayMessages.value.length === 0,
+);
+const messageListClass = computed(() =>
+  ['h-full min-h-0 max-h-full', messageListRestoring.value ? 'invisible' : '']
+    .filter(Boolean)
+    .join(' '),
+);
+
+watch(
+  displayMessages,
+  () => {
+    scrollToBottomIfFollowing();
+  },
+  { flush: 'post' },
+);
+
+const isThinkingExpanded = () => false;
+const setThinkingExpanded = () => {};
+
+const messageListItems = computed(() => {
+  const items: import('./components').ChatMessageListProps['items'] = [];
 
   for (const message of displayMessages.value) {
     const isEditing = isEditingMessage(message);
@@ -1123,12 +971,9 @@ const bubbleListItems = computed(() => {
     items.push({
       content: isEditing
         ? getMessageTextContent(message)
-        : renderChatMessageBubbleContent(message, {
-            isDark: isDark.value,
-            isThinkingExpanded,
-            protocolDriver: currentChatProtocol,
-            setThinkingExpanded,
-          }),
+          : renderChatMessageContent(message, {
+              isDark: isDark.value,
+            }),
       extraInfo: {
         message,
       },
@@ -1136,17 +981,6 @@ const bubbleListItems = computed(() => {
       role: message.role === 'assistant' ? 'assistant' : 'user',
       streaming: Boolean(message.role === 'assistant' && message.streaming),
     });
-
-    if (contextDividerAfterMessageId.value === message.id) {
-      items.push({
-        content: '已清除上下文',
-        dividerProps: {
-          plain: true,
-        },
-        key: `${message.id}-context-divider`,
-        role: 'divider',
-      });
-    }
   }
 
   return items;
@@ -1158,25 +992,6 @@ const enabledProviders = computed(() => {
 
 const enabledModels = computed(() => {
   return models.value.filter((item) => Number(item.status) === 1);
-});
-
-const providerOptions = computed(() => {
-  const options = enabledProviders.value.map((item) => ({
-    label: item.name,
-    value: item.id,
-  }));
-
-  if (
-    selectedProviderId.value &&
-    !options.some((item) => item.value === selectedProviderId.value)
-  ) {
-    options.unshift({
-      label: `供应商 #${selectedProviderId.value}`,
-      value: selectedProviderId.value,
-    });
-  }
-
-  return options;
 });
 
 const modelOptions = computed(() => {
@@ -1206,63 +1021,6 @@ const activeConversationTitle = computed(() => {
   );
 });
 
-const activeConversationSubtitle = computed(() => {
-  if (!activeConversation.value) {
-    return '';
-  }
-
-  return `创建于 ${parseDateLabel(activeConversation.value.created_time)}`;
-});
-
-const contextDividerAfterMessageId = computed(() => {
-  const detail = activeConversationDetail.value;
-
-  if (!detail?.context_cleared_time || activeMessages.value.length === 0) {
-    return undefined;
-  }
-
-  const clearedAt = new Date(detail.context_cleared_time).getTime();
-
-  if (!Number.isNaN(clearedAt)) {
-    let dividerIndex = -1;
-
-    for (const [index, item] of activeMessages.value.entries()) {
-      const messageTime = new Date(item.created_time).getTime();
-
-      if (Number.isNaN(messageTime) || messageTime <= clearedAt) {
-        dividerIndex = index;
-      }
-    }
-
-    if (dividerIndex >= 0) {
-      return activeMessages.value[dividerIndex]?.id;
-    }
-  }
-
-  if (
-    detail.context_start_message_id !== null &&
-    detail.context_start_message_id !== undefined
-  ) {
-    const anchorIndex = activeMessages.value.findIndex(
-      (item) => item.message_id === detail.context_start_message_id,
-    );
-
-    if (anchorIndex !== -1) {
-      return activeMessages.value[anchorIndex]?.id;
-    }
-  }
-
-  return activeMessages.value[activeMessages.value.length - 1]?.id;
-});
-
-const selectedProviderLabel = computed(() => {
-  return (
-    providerOptions.value.find(
-      (item) => item.value === selectedProviderId.value,
-    )?.label || '请选择供应商'
-  );
-});
-
 const selectedModelLabel = computed(() => {
   return (
     modelOptions.value.find((item) => item.value === selectedModelId.value)
@@ -1270,107 +1028,48 @@ const selectedModelLabel = computed(() => {
   );
 });
 
-const selectedProviderModelLabel = computed(() => {
-  return `${selectedProviderLabel.value} / ${selectedModelLabel.value}`;
-});
-
-function hasGenerationSettingsChanged() {
-  return Boolean(
-    maxTokens.value !== undefined ||
-    temperature.value !== 1 ||
-    topP.value !== undefined ||
-    timeout.value !== undefined,
-  );
-}
-
-function hasBehaviorSettingsChanged() {
-  return Boolean(
-    seed.value !== undefined ||
-    presencePenalty.value !== undefined ||
-    frequencyPenalty.value !== undefined,
-  );
-}
-
-function hasToolingSettingsChanged() {
-  return Boolean(
-    parallelToolCalls.value !== true || enableBuiltinTools.value !== true,
-  );
-}
-
-function hasPassthroughSettingsChanged() {
-  return Boolean(
-    stopSequences.value.trim() ||
-    extraHeaders.value.trim() ||
-    extraBody.value.trim() ||
-    logitBias.value.trim(),
-  );
-}
-
-const hasAdvancedSettings = computed(() => {
-  return Boolean(
-    hasGenerationSettingsChanged() ||
-    hasBehaviorSettingsChanged() ||
-    hasToolingSettingsChanged() ||
-    hasPassthroughSettingsChanged(),
+const selectedProviderLabel = computed(() => {
+  return (
+    enabledProviders.value.find((item) => item.id === selectedProviderId.value)
+      ?.name || ''
   );
 });
+
+function getProviderLabel(providerId?: null | number) {
+  if (providerId === null || providerId === undefined) {
+    return undefined;
+  }
+
+  return providers.value.find((item) => item.id === providerId)?.name;
+}
 
 const canClearMessages = computed(() => {
   return Boolean(activeConversationId.value && activeMessages.value.length > 0);
 });
 
 const canCreateNewConversation = computed(() => {
-  return activeMessages.value.length > 0;
-});
-
-const composerHint = computed(() => {
-  if (editingMessage.value?.message_index !== undefined) {
-    return `正在编辑第 ${editingMessage.value.message_index + 1} 条用户消息`;
-  }
-  if (regeneratingMessageIndex.value !== undefined) {
-    return `正在重新生成第 ${regeneratingMessageIndex.value + 1} 条 AI 回复`;
-  }
-  return '';
-});
-
-const webSearchButtonLabel = computed(() => {
-  const activeOption = WEB_SEARCH_OPTIONS.find(
-    (item) => item.value === webSearch.value,
+  return Boolean(
+    activeConversationId.value ||
+      activeMessages.value.length > 0 ||
+      transientMessages.value.length > 0,
   );
-
-  return activeOption?.label || '联网搜索';
 });
 
-const generationTypeButtonLabel = computed(() => {
-  const activeOption = GENERATION_TYPE_OPTIONS.find(
-    (item) => item.value === generationType.value,
-  );
-
-  return activeOption?.label || '文本';
-});
-
-const thinkingButtonLabel = computed(() => {
-  const activeOption = THINKING_OPTIONS.find(
-    (item) => item.value === thinking.value,
-  );
-  return activeOption?.label || '默认';
-});
-
-const senderAutoSize: NonNullable<SenderProps['autoSize']> = {
-  maxRows: 6,
-  minRows: 2,
-};
-
-const conversationItems = computed<ConversationsProps['items']>(() =>
-  buildConversationSidebarItems(conversationSummaries.value),
+const conversationItems = computed<ConversationSidebarItem[]>(() =>
+  buildConversationSidebarItems(
+    conversationSummaries.value.map((item) => ({
+      ...item,
+      is_generating: isConversationBusy(item.conversation_id),
+    })),
+  ),
 );
 
-const conversationCreation = computed<ConversationsProps['creation']>(() => ({
-  disabled: sending.value || !canCreateNewConversation.value,
+const conversationCreation = computed<ConversationSidebarCreation>(() => ({
+  disabled: !canCreateNewConversation.value,
   onClick: createNewConversation,
 }));
 
-const conversationListMenu = computed<ConversationsProps['menu']>(() =>
+const conversationListMenu = computed<ConversationSidebarMenu>(() =>
   createConversationSidebarMenu({
     conversations: conversationSummaries.value,
     onDelete: confirmRemoveConversation,
@@ -1387,45 +1086,17 @@ function handleConversationActiveChange(value: number | string) {
   void selectConversation(String(value));
 }
 
-function handleQuickPhraseSelect(item: AIQuickPhraseResult) {
-  appendQuickPhrase(item);
-  quickPhrasePopoverOpen.value = false;
-}
-
-const suggestionItems = computed<SuggestionItem[]>(() => {
-  return quickPhrases.value.map((item) => ({
-    key: String(item.id),
-    label: item.title,
-    value: item.content,
-  }));
-});
-
-function handleSuggestionSelect(value: string) {
-  prompt.value = value;
-}
-
-function handleSenderSubmit(messageText: string) {
-  void submitChat(undefined, true, messageText);
-}
-
-function handleSenderChange(value: string) {
-  prompt.value = value;
-}
-
-function handleSenderChangeWithSuggestion(
-  value: string,
-  onTrigger: (info?: false | string) => void,
+function handlePromptInputSubmit(
+  messageText: string,
+  _slotConfig?: unknown,
+  _skill?: unknown,
+  attachments: AIChatComposerAttachment[] = [],
 ) {
-  handleSenderChange(value);
+  return submitChat(undefined, true, messageText, attachments);
+}
 
-  if (value === '/') {
-    onTrigger('/');
-    return;
-  }
-
-  if (!value) {
-    onTrigger(false);
-  }
+function handlePromptInputChange(value: string) {
+  prompt.value = value;
 }
 
 function confirmDeleteMessage(item: ChatMessageItem) {
@@ -1437,608 +1108,38 @@ function confirmDeleteMessage(item: ChatMessageItem) {
   });
 }
 
-const bubbleListRole = computed<BubbleListProps['role']>(() =>
-  createChatBubbleListRole({
-    editingMessageIntent: editingMessageIntent.value,
+const messageListRole = computed(() =>
+  createChatMessageListRole({
+    canResendLastUserMessage,
     isDark: isDark.value,
     isEditingMessage,
     isThinkingExpanded,
     onBeginEditMessage: beginEditMessage,
     onCancelEditMessage: cancelEditMessage,
     onConfirmDeleteMessage: confirmDeleteMessage,
-    onCopyMessage: copyMessageContent,
-    onRegenerateMessage: regenerateMessage,
-    onRegenerateUserMessage: regenerateUserMessage,
     onResendEditedMessage: resendEditedMessage,
-    onSaveEditedMessage: saveEditedMessage,
-    protocolDriver: currentChatProtocol,
+    getProviderLabel,
     selectedModelId: selectedModelId.value,
     selectedModelLabel: selectedModelLabel.value,
+    selectedProviderId: selectedProviderId.value,
+    selectedProviderLabel: selectedProviderLabel.value,
     setThinkingExpanded,
   }),
 );
 
-function renderFooterIconButton(options: {
-  disabled?: boolean;
-  icon: string;
-  onClick?: () => void;
-  title: string;
-}) {
-  return h(AButton, {
-    class: 'inline-flex size-8 items-center justify-center !px-0',
-    disabled: options.disabled,
-    htmlType: 'button',
-    icon: h(IconifyIcon, {
-      class: 'size-4',
-      icon: options.icon,
-    }),
-    onClick: () => {
-      options.onClick?.();
-    },
-    size: 'small',
-    title: options.title,
-    type: 'text',
-  });
-}
-
-function renderThinkingPopoverContent() {
-  return h('div', { class: 'w-[320px] space-y-3' }, [
-    h('div', { class: 'text-xs font-medium text-foreground' }, '思考链'),
-    h(
-      'div',
-      { class: 'space-y-2' },
-      THINKING_OPTIONS.map((item) =>
-        h(
-          'button',
-          {
-            key: item.key,
-            class: [
-              'flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors',
-              thinking.value === item.value
-                ? 'border-primary/35 bg-primary/10'
-                : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30',
-            ],
-            onClick: () => {
-              thinking.value = item.value;
-            },
-            type: 'button',
-          },
-          [
-            h(
-              'span',
-              {
-                class: [
-                  'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px]',
-                  thinking.value === item.value
-                    ? 'border-primary bg-primary text-primary-foreground'
-                    : 'border-border bg-background text-transparent',
-                ],
-              },
-              '✓',
-            ),
-            h('span', { class: 'min-w-0 flex-1' }, [
-              h(
-                'span',
-                { class: 'block text-xs font-medium text-foreground' },
-                item.label,
-              ),
-              h(
-                'span',
-                { class: 'mt-1 block text-[11px] text-muted-foreground/75' },
-                item.desc,
-              ),
-            ]),
-          ],
-        ),
-      ),
-    ),
-  ]);
-}
-
-function renderGenerationPopoverContent() {
-  return h('div', { class: 'w-[320px] space-y-3' }, [
-    h('div', { class: 'text-xs font-medium text-foreground' }, '生成类型'),
-    h(
-      'div',
-      { class: 'space-y-2' },
-      GENERATION_TYPE_OPTIONS.map((item) =>
-        h(
-          'button',
-          {
-            key: item.value,
-            class: [
-              'flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors',
-              generationType.value === item.value
-                ? 'border-primary/35 bg-primary/10'
-                : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30',
-            ],
-            onClick: () => {
-              generationType.value = item.value;
-            },
-            type: 'button',
-          },
-          [
-            h(
-              'span',
-              {
-                class: [
-                  'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px] leading-none',
-                  generationType.value === item.value
-                    ? 'border-primary bg-primary text-primary-foreground'
-                    : 'border-border bg-background text-transparent',
-                ],
-              },
-              '✓',
-            ),
-            h('span', { class: 'min-w-0 flex-1' }, [
-              h(
-                'span',
-                {
-                  class:
-                    'block truncate text-xs font-medium leading-4 text-foreground',
-                },
-                item.label,
-              ),
-              h(
-                'span',
-                {
-                  class:
-                    'mt-1 block truncate text-[11px] leading-4 text-muted-foreground/75',
-                },
-                item.desc,
-              ),
-            ]),
-          ],
-        ),
-      ),
-    ),
-  ]);
-}
-
-function renderWebSearchPopoverContent() {
-  return h('div', { class: 'w-[320px] space-y-3' }, [
-    h('div', { class: 'text-xs font-medium text-foreground' }, '网络搜索'),
-    h(
-      'div',
-      { class: 'space-y-2' },
-      WEB_SEARCH_OPTIONS.map((item) =>
-        h(
-          'button',
-          {
-            key: item.value,
-            class: [
-              'flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition-colors',
-              webSearch.value === item.value
-                ? 'border-primary/35 bg-primary/10'
-                : 'border-border bg-background hover:border-primary/30 hover:bg-accent/30',
-            ],
-            onClick: () => {
-              webSearch.value = item.value;
-            },
-            type: 'button',
-          },
-          [
-            h(
-              'span',
-              {
-                class: [
-                  'mt-0.5 inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px] leading-none',
-                  webSearch.value === item.value
-                    ? 'border-primary bg-primary text-primary-foreground'
-                    : 'border-border bg-background text-transparent',
-                ],
-              },
-              '✓',
-            ),
-            h('span', { class: 'min-w-0 flex-1' }, [
-              h(
-                'span',
-                {
-                  class:
-                    'block truncate text-xs font-medium leading-4 text-foreground',
-                },
-                item.label,
-              ),
-              h(
-                'span',
-                {
-                  class:
-                    'mt-1 block truncate text-[11px] leading-4 text-muted-foreground/75',
-                },
-                item.desc,
-              ),
-            ]),
-          ],
-        ),
-      ),
-    ),
-  ]);
-}
-
-function renderMcpPopoverContent() {
-  return h('div', { class: 'w-[360px] space-y-3' }, [
-    h('div', { class: 'text-xs font-medium text-foreground' }, 'MCP'),
-    mcps.value.length === 0
-      ? h(AEmpty, {
-          description: '暂无可用 MCP',
-          image: null,
-        })
-      : h(
-          'div',
-          {
-            class:
-              'flex max-h-[260px] min-h-[120px] flex-col gap-2 overflow-y-auto',
-          },
-          mcps.value.map((item) =>
-            h(
-              'button',
-              {
-                key: item.id,
-                class: [
-                  'flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
-                  isMcpSelected(item.id)
-                    ? 'border-primary/30 bg-primary/8 text-foreground'
-                    : 'border-border bg-background hover:border-primary/20 hover:bg-accent/30',
-                ],
-                onClick: () => {
-                  toggleMcpSelection(item.id);
-                },
-                title:
-                  `${item.name} ${item.description || item.command || item.url || `MCP #${item.id}`}`.trim(),
-                type: 'button',
-              },
-              [
-                h(
-                  'span',
-                  {
-                    class:
-                      'min-w-0 shrink-0 truncate text-xs font-medium text-foreground',
-                  },
-                  item.name,
-                ),
-                h(
-                  'span',
-                  {
-                    class:
-                      'min-w-0 flex-1 truncate text-[11px] text-muted-foreground/75',
-                  },
-                  item.description ||
-                    item.command ||
-                    item.url ||
-                    `MCP #${item.id}`,
-                ),
-                h(
-                  'span',
-                  {
-                    class: [
-                      'inline-flex size-4 shrink-0 items-center justify-center rounded border text-[10px] leading-none',
-                      isMcpSelected(item.id)
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'border-border bg-background text-transparent',
-                    ],
-                  },
-                  '✓',
-                ),
-              ],
-            ),
-          ),
-        ),
-  ]);
-}
-
-function renderQuickPhrasePopoverContent() {
-  let quickPhraseContent;
-  if (quickPhraseLoading.value) {
-    quickPhraseContent = h(
-      'div',
-      {
-        class:
-          'flex min-h-[120px] items-center justify-center text-muted-foreground',
-      },
-      [h(ASpin, { size: 'small' })],
-    );
-  } else if (quickPhrases.value.length === 0) {
-    quickPhraseContent = h(AEmpty, {
-      description: '暂无快捷短语',
-      image: null,
-    });
-  } else {
-    quickPhraseContent = h(
-      'div',
-      {
-        class:
-          'flex max-h-[260px] min-h-[120px] flex-col gap-2 overflow-y-auto',
-      },
-      quickPhrases.value.map((item) =>
-        h(
-          'button',
-          {
-            key: item.id,
-            class:
-              'flex w-full items-center gap-3 rounded-lg border border-border bg-background px-3 py-2 text-left transition-colors hover:border-primary/20 hover:bg-accent/30',
-            onClick: () => {
-              handleQuickPhraseSelect(item);
-            },
-            title: `${item.title} ${item.content}`.trim(),
-            type: 'button',
-          },
-          [
-            h(
-              'span',
-              {
-                class:
-                  'min-w-0 shrink-0 truncate text-xs font-medium text-foreground',
-              },
-              item.title,
-            ),
-            h(
-              'span',
-              {
-                class:
-                  'min-w-0 flex-1 truncate text-[11px] text-muted-foreground/75',
-              },
-              item.content,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  return h('div', { class: 'w-[360px] space-y-3' }, [
-    h('div', { class: 'text-xs font-medium text-foreground' }, '快捷短语'),
-    quickPhraseContent,
-  ]);
-}
-
-const renderSenderFooter: NonNullable<SenderProps['footer']> = (_, info) => {
-  const { LoadingButton, SendButton } = info.components;
-  const thinkingButtonTitle = `思考：${thinkingButtonLabel.value}`;
-
-  return h(
-    AFlex,
-    {
-      align: 'center',
-      gap: 'small',
-      justify: 'space-between',
-      vertical: false,
-      wrap: 'wrap',
-    },
-    {
-      default: () => [
-        h(
-          AFlex,
-          {
-            align: 'center',
-            gap: 'middle',
-            wrap: 'wrap',
-          },
-          {
-            default: () => [
-              renderFooterIconButton({
-                disabled: sending.value || !canCreateNewConversation.value,
-                icon: 'mdi:message-plus-outline',
-                onClick: createNewConversation,
-                title: '新建话题',
-              }),
-              h(
-                Popover,
-                { placement: 'topLeft', trigger: 'click' },
-                {
-                  content: () => renderGenerationPopoverContent(),
-                  default: () =>
-                    renderFooterIconButton({
-                      disabled: sending.value,
-                      icon:
-                        generationType.value === 'image'
-                          ? 'mdi:image'
-                          : 'mdi:image-outline',
-                      title: `生成类型：${generationTypeButtonLabel.value}`,
-                    }),
-                },
-              ),
-              h(
-                Popover,
-                { placement: 'topLeft', trigger: 'click' },
-                {
-                  content: () => renderThinkingPopoverContent(),
-                  default: () =>
-                    renderFooterIconButton({
-                      disabled: sending.value,
-                      icon: 'mdi:head-lightbulb-outline',
-                      title: thinkingButtonTitle,
-                    }),
-                },
-              ),
-              h(
-                Popover,
-                { placement: 'topLeft', trigger: 'click' },
-                {
-                  content: () => renderWebSearchPopoverContent(),
-                  default: () =>
-                    renderFooterIconButton({
-                      disabled: sending.value,
-                      icon: 'mdi:web',
-                      title: `联网搜索：${webSearchButtonLabel.value}`,
-                    }),
-                },
-              ),
-              h(
-                Popover,
-                {
-                  align: { overflow: { adjustX: false, adjustY: true } },
-                  placement: 'topLeft',
-                  trigger: 'click',
-                },
-                {
-                  content: () => renderMcpPopoverContent(),
-                  default: () =>
-                    renderFooterIconButton({
-                      disabled: sending.value,
-                      icon: 'simple-icons:modelcontextprotocol',
-                      title:
-                        selectedMcpIds.value.length > 0
-                          ? `已选择 ${selectedMcpIds.value.length} 个 MCP`
-                          : '选择 MCP',
-                    }),
-                },
-              ),
-              h(
-                Popover,
-                {
-                  align: { overflow: { adjustX: false, adjustY: true } },
-                  onOpenChange: handleQuickPhrasePopoverOpenChange,
-                  open: quickPhrasePopoverOpen.value,
-                  placement: 'topLeft',
-                  trigger: 'click',
-                },
-                {
-                  content: () => renderQuickPhrasePopoverContent(),
-                  default: () =>
-                    renderFooterIconButton({
-                      disabled: sending.value,
-                      icon: 'mdi:lightning-bolt-outline',
-                      title: '快捷短语',
-                    }),
-                },
-              ),
-              renderFooterIconButton({
-                disabled: sending.value,
-                icon: 'mdi:cog-outline',
-                onClick: () => {
-                  settingsModalApi.open();
-                },
-                title: hasAdvancedSettings.value
-                  ? '参数设置（已调整）'
-                  : '参数设置',
-              }),
-              renderFooterIconButton({
-                disabled: !canClearMessages.value,
-                icon: 'mdi:eraser-variant',
-                onClick: () => {
-                  confirmClearMessages();
-                },
-                title: '清空消息',
-              }),
-              renderFooterIconButton({
-                disabled: sending.value || !activeConversationId.value,
-                icon: 'mdi:broom',
-                onClick: () => {
-                  confirmClearConversationContext();
-                },
-                title: '清除上下文',
-              }),
-            ],
-          },
-        ),
-        h(
-          AFlex,
-          {
-            align: 'center',
-            class: 'w-full md:w-auto',
-            gap: 'small',
-            justify: 'flex-end',
-            wrap: 'wrap',
-          },
-          {
-            default: () => [
-              composerHint.value
-                ? h(
-                    'span',
-                    {
-                      class:
-                        'inline-flex max-w-full whitespace-pre-wrap text-left text-xs leading-5 text-muted-foreground',
-                    },
-                    composerHint.value,
-                  )
-                : null,
-              sending.value
-                ? h(LoadingButton, {
-                    type: 'default',
-                  })
-                : h(SendButton, {
-                    class:
-                      'inline-flex size-8 items-center justify-center !rounded-md !px-0',
-                    disabled:
-                      !selectedProviderId.value ||
-                      !selectedModelId.value ||
-                      !prompt.value.trim(),
-                    icon: h(IconifyIcon, {
-                      class: 'size-4',
-                      icon: 'mdi:send',
-                    }),
-                    shape: 'default',
-                    type: 'text',
-                  }),
-            ],
-          },
-        ),
-      ],
-    },
-  );
-};
-
-watch(
-  selectedProviderId,
-  async (providerId) => {
-    await fetchModelsByProvider(providerId);
+const {
+  fetchQuickPhrases: fetchQuickPhrasesFromToolbar,
+  renderPromptInputFooter,
+} = usePromptToolbar({
+  canClearMessages,
+  canCreateNewConversation,
+  confirmClearMessages,
+  createNewConversation,
+  onSelectQuickPhrase: (item) => {
+    prompt.value = prompt.value.trim()
+      ? `${prompt.value.trim()}\n${item.content}`
+      : item.content;
   },
-  { immediate: true },
-);
-
-watch(
-  displayMessages,
-  (messages) => {
-    const nextStates: Record<string, ThinkingPanelState> = {};
-
-    for (const message of messages) {
-      if (!hasThinkingContent(message)) {
-        continue;
-      }
-
-      const key = getThinkingPanelKey(message);
-      const previous = thinkingPanelStates.value[key];
-      const shouldAutoExpand = Boolean(message.streaming);
-
-      if (shouldAutoExpand) {
-        nextStates[key] = {
-          autoOpened: true,
-          expanded: true,
-        };
-        continue;
-      }
-
-      if (previous?.autoOpened) {
-        nextStates[key] = {
-          autoOpened: false,
-          expanded: false,
-        };
-        continue;
-      }
-
-      if (previous) {
-        nextStates[key] = previous;
-      }
-    }
-
-    thinkingPanelStates.value = nextStates;
-
-    if (messages.length > 0 && autoFollowMessageScroll.value) {
-      scrollToBottom();
-    }
-  },
-  { immediate: true },
-);
-
-const [SettingsModal, settingsModalApi] = useVbenModal({
-  class:
-    'h-[min(78vh,760px)] w-[min(960px,92vw)] [overscroll-behavior:contain]',
-  footer: true,
-  onOpenChange(isOpen) {
-    document.documentElement.style.overflow = isOpen ? 'hidden' : '';
-    document.body.style.overflow = isOpen ? 'hidden' : '';
-  },
-  title: '参数设置',
 });
 
 const [RenameConversationForm, renameConversationFormApi] = useVbenForm({
@@ -2054,7 +1155,8 @@ const [RenameConversationModal, renameConversationModalApi] = useVbenModal({
   },
   onOpenChange(isOpen) {
     if (isOpen) {
-      const data = renameConversationModalApi.getData<AIChatConversationResult>();
+      const data =
+        renameConversationModalApi.getData<AIChatConversationResult>();
       renameConversationFormApi.resetForm();
       if (data) {
         renameConversationFormData.value = data;
@@ -2075,9 +1177,8 @@ const [RenameConversationModal, renameConversationModalApi] = useVbenModal({
 });
 
 onMounted(async () => {
-  await fetchProviders();
-  await fetchMcps();
-  await fetchQuickPhrases();
+  await refreshChatResources();
+  await fetchQuickPhrasesFromToolbar();
   await initializeSession();
 
   hasInitialized = true;
@@ -2089,23 +1190,24 @@ onActivated(async () => {
   }
 
   await refreshChatResources();
-  await initializeSession();
+  await fetchQuickPhrasesFromToolbar();
+  if (!activeConversationId.value && activeMessages.value.length === 0) {
+    await initializeSession();
+  }
 });
 
 onBeforeUnmount(() => {
   document.documentElement.style.overflow = '';
   document.body.style.overflow = '';
-  abortTransientRequest();
+  if (generatingPollTimer) {
+    clearInterval(generatingPollTimer);
+  }
+  detachAll();
 });
 </script>
 
 <template>
-  <ColPage
-    auto-content-height
-    content-class="h-full"
-    :left-width="20"
-    :right-width="80"
-  >
+  <ColPage auto-content-height :left-width="20" :right-width="80">
     <template #left>
       <ChatSidebar
         :active-key="activeConversationId"
@@ -2120,177 +1222,164 @@ onBeforeUnmount(() => {
       />
     </template>
 
-    <section
-      class="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[var(--radius)] border border-border bg-card"
-    >
-      <div class="border-b border-border px-5 py-4 md:px-6">
-        <div class="flex flex-wrap items-start gap-3">
-          <div class="min-w-0 flex-1">
-            <div class="flex min-w-0 items-center justify-between gap-4">
-              <div class="inline-flex min-w-0 max-w-full items-center gap-2">
-                <div
-                  class="min-w-0 max-w-[220px] truncate text-[13px] font-semibold leading-7 text-foreground"
-                  :title="activeConversationTitle"
-                >
-                  {{ activeConversationTitle }}
-                </div>
-                <IconifyIcon
-                  class="size-3 shrink-0 text-muted-foreground"
-                  icon="mdi:chevron-right"
-                />
-                <a-popover placement="bottomLeft" trigger="click">
-                  <template #content>
-                    <div class="w-[280px] space-y-3">
-                      <div>
-                        <div class="mb-2 text-xs font-medium text-foreground">
-                          供应商
-                        </div>
-                        <a-select
-                          v-model:value="selectedProviderId"
-                          class="w-full"
-                          :disabled="sending || resourcesLoading"
-                          :options="providerOptions"
-                          placeholder="请选择供应商"
-                        />
-                      </div>
-                      <div>
-                        <div class="mb-2 text-xs font-medium text-foreground">
-                          模型
-                        </div>
-                        <a-select
-                          v-model:value="selectedModelId"
-                          class="w-full"
-                          :disabled="
-                            sending ||
-                            resourcesLoading ||
-                            modelOptions.length === 0
-                          "
-                          :options="modelOptions"
-                          placeholder="请选择模型"
-                        />
-                      </div>
-                    </div>
-                  </template>
-                  <button
-                    class="inline-flex min-w-0 max-w-[360px] items-center gap-1 rounded-md px-1 py-1 text-[13px] leading-7 text-foreground transition-colors hover:bg-accent/55"
-                    :disabled="sending || resourcesLoading"
-                    type="button"
-                  >
-                    <span class="truncate">{{
-                      selectedProviderModelLabel
-                    }}</span>
-                    <IconifyIcon
-                      class="size-3.5 shrink-0 text-muted-foreground"
-                      icon="mdi:chevron-down"
-                    />
-                  </button>
-                </a-popover>
-              </div>
-              <div
-                class="min-w-0 flex-1 truncate text-right text-xs leading-tight text-muted-foreground"
-                :title="activeConversationSubtitle"
-              >
-                {{ activeConversationSubtitle }}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div
-        ref="messageContainerRef"
-        class="flex-1 overflow-x-hidden overflow-y-auto bg-background/60 px-5 py-5 md:px-6 md:py-6"
-        @scroll="handleMessageContainerScroll"
-      >
-        <div
-          v-if="detailLoading"
-          class="flex min-h-full items-center justify-center"
-        >
-          <ASpin />
-        </div>
-        <div
-          v-else-if="displayMessages.length === 0"
-          class="flex min-h-full items-center justify-center"
-        >
-          <div class="w-full max-w-[720px]">
-            <Welcome
-              :description="
-                selectedProviderId && selectedModelId
-                  ? `当前模型：${selectedProviderModelLabel}`
-                  : '选择供应商和模型后开始对话'
-              "
-              title="你好，我是 FBA UI 智能助手"
-            />
-          </div>
-        </div>
-        <BubbleList
-          v-else
-          :items="bubbleListItems"
-          :role="bubbleListRole"
-          class="min-h-full"
-        />
-      </div>
-
-      <Suggestion
-        block
-        :items="suggestionItems"
-        @select="handleSuggestionSelect"
-      >
-        <template #default="{ onKeyDown, onTrigger }">
-          <ChatSender
-            :auto-size="senderAutoSize"
-            :disabled="false"
-            :footer="renderSenderFooter"
-            :loading="sending"
-            name="chat-message"
-            :on-cancel="stopStreaming"
-            :on-change="
-              (value: string) =>
-                handleSenderChangeWithSuggestion(String(value), onTrigger)
-            "
-            :on-key-down="onKeyDown"
-            :on-submit="handleSenderSubmit"
-            placeholder="在这里输入消息，按 Enter 发送"
-            :suffix="false"
-            :value="prompt"
-          />
-        </template>
-      </Suggestion>
-    </section>
-
-    <SettingsModal
-      content-class="h-full min-h-0 overflow-hidden p-0 [overscroll-behavior:contain]"
-      footer-class="border-t border-border px-4 py-4 md:px-5"
-      :show-cancel-button="false"
-      :show-confirm-button="false"
+    <a-card
+      :classes="{
+        root: 'flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[var(--radius)] bg-card',
+        header: 'shrink-0 !border-b !border-border md:!px-6',
+        body: 'flex min-h-0 flex-1 flex-col !p-0',
+      }"
+      variant="outlined"
     >
       <template #title>
-        <span>参数设置</span>
+        <div class="flex min-w-0 flex-wrap items-center gap-2">
+          <div
+            class="min-w-0 max-w-[min(420px,48vw)] truncate text-[13px] font-semibold leading-7 text-foreground"
+            :title="activeConversationTitle"
+          >
+            {{ activeConversationTitle }}
+          </div>
+          <ChatModelSelector
+            class="shrink-0"
+            :disabled="sending || resourcesLoading"
+            :loading="resourcesLoading"
+            :models="enabledModels"
+            :providers="enabledProviders"
+            :selected-model-id="selectedModelId"
+            :selected-provider-id="selectedProviderId"
+            @select-model="handleModelSelectorModelSelect"
+          />
+        </div>
       </template>
-      <template #append-footer>
-        <AButton danger type="primary" @click="resetModelSettings">
-          重置
-        </AButton>
-      </template>
-      <ChatSettingsPanel
-        v-model:enable-builtin-tools="enableBuiltinTools"
-        v-model:extra-body="extraBody"
-        v-model:extra-headers="extraHeaders"
-        v-model:frequency-penalty="frequencyPenalty"
-        v-model:logit-bias="logitBias"
-        v-model:max-tokens="maxTokens"
-        v-model:parallel-tool-calls="parallelToolCalls"
-        v-model:presence-penalty="presencePenalty"
-        v-model:seed="seed"
-        v-model:stop-sequences="stopSequences"
-        v-model:temperature="temperature"
-        v-model:timeout="timeout"
-        v-model:top-p="topP"
-      />
-    </SettingsModal>
 
-    <RenameConversationModal content-class="px-4 py-4 md:px-5 md:py-5">
+      <div class="relative min-h-0 flex-1">
+        <div class="h-full overflow-hidden">
+          <div
+            v-if="!detailLoading && displayMessages.length === 0"
+            class="flex min-h-full items-center justify-center"
+          >
+            <div class="w-full max-w-[720px]">
+              <ConversationEmptyState
+                :description="
+                  selectedProviderId && selectedModelId
+                    ? '可以直接提问、生成内容，或结合工具完成更复杂的任务'
+                    : '先选择供应商和模型，然后开始你的第一个问题'
+                "
+                title="你好，我是 FBA AI"
+              >
+                <template #icon>
+                  <div
+                    class="flex size-12 items-center justify-center rounded-2xl bg-primary/10 text-primary"
+                  >
+                    <IconifyIcon
+                      class="size-7"
+                      icon="mdi:robot-happy-outline"
+                    />
+                  </div>
+                </template>
+              </ConversationEmptyState>
+            </div>
+          </div>
+          <ChatConversationList
+            v-else-if="displayMessages.length > 0"
+            :key="`${activeConversationId || 'draft'}:${messageListViewportVersion}`"
+            :ref="setMessageContainerRef"
+            auto-scroll
+            :classes="{
+              scroll: 'md:pt-4',
+            }"
+            :items="messageListItems"
+            :on-scroll="handleMessageContainerScroll"
+            :role="messageListRole"
+            :class="messageListClass"
+          />
+          <div
+            v-if="messageAreaLoading"
+            class="absolute inset-0 z-10 flex items-center justify-center bg-card"
+          >
+            <a-spin description="正在渲染消息..." />
+          </div>
+        </div>
+      </div>
+
+      <ChatPromptInput
+        :disabled="false"
+        :footer="renderPromptInputFooter"
+        :loading="sending"
+        name="chat-message"
+        :on-cancel="handleStopStreaming"
+        :on-change="handlePromptInputChange"
+        :on-submit="handlePromptInputSubmit"
+        placeholder="在这里输入消息，Enter 发送，Shift + Enter 换行"
+        :suffix="false"
+        :value="prompt"
+      />
+    </a-card>
+
+    <RenameConversationModal>
       <RenameConversationForm />
     </RenameConversationModal>
   </ColPage>
 </template>
+
+<style>
+.ai-elements-markdown p {
+  margin: 0;
+}
+
+.ai-elements-markdown h1,
+.ai-elements-markdown h2,
+.ai-elements-markdown h3,
+.ai-elements-markdown h4,
+.ai-elements-markdown h5,
+.ai-elements-markdown h6 {
+  margin: 0.6rem 0 0.35rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.ai-elements-markdown ul,
+.ai-elements-markdown ol {
+  margin: 0.35rem 0;
+  padding-left: 1.25rem;
+}
+
+.ai-elements-markdown li + li {
+  margin-top: 0.2rem;
+}
+
+.ai-elements-markdown a {
+  color: hsl(var(--primary));
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.ai-elements-markdown code {
+  border-radius: 0.375rem;
+  background: hsl(var(--muted));
+  padding: 0.1rem 0.35rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.ai-elements-markdown blockquote {
+  margin: 0.5rem 0;
+  border-left: 3px solid hsl(var(--primary) / 0.45);
+  background: hsl(var(--muted) / 0.35);
+  padding: 0.5rem 0.75rem;
+  color: hsl(var(--muted-foreground));
+}
+
+.ai-elements-markdown img {
+  max-width: 100%;
+  border-radius: 0.75rem;
+}
+
+.ai-message-error .ai-elements-markdown {
+  color: hsl(var(--destructive));
+}
+
+.ai-message-error .ai-elements-markdown * {
+  color: hsl(var(--destructive));
+}
+</style>
