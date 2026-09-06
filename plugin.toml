@@ -1,6 +1,6 @@
 [plugin]
 summary = 'AI UI'
 version = '1.0.0'
-description = '为系统提供基础 AI 对话、话题历史、快捷短语、供应商和模型管理能力'
+description = 'fba AI 插件的前端实现'
 author = 'wu-clan'
 tags = ['ai', 'agent']
